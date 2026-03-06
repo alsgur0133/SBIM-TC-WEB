@@ -1,0 +1,36 @@
+# Dependencies
+node_modules
+
+# Build
+dist
+*.local
+
+# Large archives (GitHub 100MB limit)
+*.zip
+SBIM TC WEB.zip
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Server DB
+server/sbim-tc.db
+server/sbim-tc.db-shm
+server/sbim-tc.db-wal
+
+# Uploaded files
+server/uploads

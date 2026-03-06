@@ -1,0 +1,66 @@
+:root {
+  --radius: 14px;
+  --radius-sm: 9px;
+  --font-sans: 'Pretendard', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* 메인 앱 - 밝은 테마 (부드러운 그라데이션 배경 + 뉴트럴 서페이스) */
+  --bg: radial-gradient(circle at top left, #e0f2fe 0, #eef2ff 35%, #f9fafb 100%);
+  --surface: #ffffff;
+  --border: #e5e7eb;
+  --text: #020617;
+  --text-muted: #64748b;
+  --accent: #2563eb;        /* indigo-600 */
+  --accent-hover: #1d4ed8;  /* indigo-700 */
+  --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 18px 45px rgba(15, 23, 42, 0.12);
+
+  /* 사이드바 - 다크 톤 네비게이션 */
+  --sidebar-bg: #020617;
+  --sidebar-border: #111827;
+  --sidebar-text: #e5e7eb;
+  --sidebar-text-muted: #9ca3af;
+  --sidebar-active-bg: rgba(37, 99, 235, 0.16);
+  --sidebar-active-border: #60a5fa;
+  --sidebar-hover-bg: rgba(15, 23, 42, 0.88);
+
+  /* 메인 콘텐츠 */
+  --main-bg: transparent;
+  --main-surface: #ffffff;
+  --main-border: #e5e7eb;
+  --main-text: #020617;
+  --main-text-muted: #64748b;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  height: 100%;
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  letter-spacing: -0.01em;
+}
+
+#root {
+  min-height: 100vh;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
