@@ -5,7 +5,7 @@
 `npm run server`를 실행한 터미널에서 **sa/1234** 로그인 직후 다음 로그가 나오는지 봅니다.
 
 - `[로그인 500]` 또는 `[미처리 오류]` 뒤에 **실제 오류 메시지**가 출력됩니다.
-- 예: `no such column: status`, `SQLITE_ERROR: ...` 등
+- 예: `column ... does not exist`, `ECONNREFUSED`(DB 연결 실패) 등
 
 이 메시지가 500의 원인입니다.
 
@@ -14,27 +14,21 @@
 브라우저 개발자 도구 → **Network** 탭 → 로그인 요청(POST `/api/auth/login`) 선택 → **Response** 탭을 봅니다.
 
 - 개발 모드에서는 500 응답 body에 `error` 필드로 **서버 오류 메시지**가 포함됩니다.
-- 예: `{ "success": false, "error": "no such column: status" }`
+- 예: `{ "success": false, "error": "..." }` (PostgreSQL·스키마·연결 오류)
 
 프론트에서는 "요청에 실패했습니다.(500)"만 보여줄 수 있지만, 위 Response에 실제 원인이 나옵니다.
 
-## 3. DB 스키마 확인
+## 3. DB 스키마·연결 확인
 
-SQLite DB(`server/sbim-tc.db`)의 `users` 테이블 컬럼을 확인합니다.
+PostgreSQL에 연결되는지 확인합니다 (`server/.env` 또는 루트 `.env`의 `DATABASE_URL`).
 
 ```bash
-cd server
-node -e "const db = require('better-sqlite3')('sbim-tc.db'); console.log(db.prepare('PRAGMA table_info(users)').all());"
+# psql 등으로
+\d users
 ```
 
-또는 SQLite 클라이언트로:
-
-```sql
-PRAGMA table_info(users);
-```
-
-- 최소한 `id`, `name`, `email`, `password` 4개 컬럼이 있으면 로그인 코드는 동작하도록 수정되어 있습니다.
-- `status`, `is_admin`, `role`, `company`, `created_at`이 없어도 fallback으로 처리합니다.
+- `DATABASE_URL`이 비어 있으면 서버가 시작 시 종료할 수 있습니다.
+- 마이그레이션·스키마는 `server/db-pg.js`의 `runSchema`가 기동 시 적용합니다.
 
 ## 4. 수정 사항 요약 (서버 코드)
 

@@ -10,6 +10,7 @@ import {
   type QuantitySummaryItemTypeRow,
   type QuantitySummaryData,
 } from '../api/quantityFile'
+import { effectiveDesignRevisionIdForSync, postIfcViewerSync } from '../lib/ifcViewerSync'
 
 function sumCategory(row: QuantitySummaryData, concreteCols: string[], formworkCols: string[], rebarCols: string[]) {
   let c = 0
@@ -94,6 +95,22 @@ export default function QuantityCompare() {
 
   const canCompare = Boolean(
     revisionAId && revisionBId && (phaseAId !== phaseBId || revisionAId !== revisionBId)
+  )
+
+  const syncIfcViewerFloorFromCompare = useCallback(
+    (floor: string | null | undefined) => {
+      const rev = effectiveDesignRevisionIdForSync(revisionAId)
+      const f = floor?.trim()
+      if (!rev || !f) return
+      postIfcViewerSync({
+        v: 1,
+        action: 'highlightFloor',
+        designRevisionId: rev,
+        projectId: selectedProject?.id,
+        floor: f,
+      })
+    },
+    [revisionAId, selectedProject?.id]
   )
 
   const loadBoth = useCallback(() => {
@@ -428,6 +445,7 @@ export default function QuantityCompare() {
                   {floorCompareRows.map((row, i) => (
                     <tr
                       key={`${row.dong}\t${row.floor}\t${i}`}
+                      onClick={() => syncIfcViewerFloorFromCompare(row.floor)}
                       onDoubleClick={() => setDetailFloor({ dong: row.dong, floor: row.floor })}
                       style={{ cursor: 'pointer' }}
                     >
@@ -479,7 +497,11 @@ export default function QuantityCompare() {
                 </thead>
                 <tbody>
                   {floorItemCompareRows.map((row, i) => (
-                    <tr key={`${row.dong}\t${row.floor}\t${row.itemType}\t${i}`}>
+                    <tr
+                      key={`${row.dong}\t${row.floor}\t${row.itemType}\t${i}`}
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => syncIfcViewerFloorFromCompare(row.floor)}
+                    >
                       <td>{row.dong}</td>
                       <td>{row.floor}</td>
                       <td>{row.itemType}</td>

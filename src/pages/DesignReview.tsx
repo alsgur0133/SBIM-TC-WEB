@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useProject } from '../contexts/ProjectContext'
 import { useDesignSchedule } from '../contexts/DesignScheduleContext'
+import DesignMgmtPageShell from '../components/DesignMgmtPageShell'
+import { VirtualDataGrid } from '../components/VirtualDataGrid'
 import {
   getDesignReviewsApi,
   createDesignReviewApi,
@@ -34,7 +36,6 @@ export default function DesignReviewPage() {
   const [formMemo, setFormMemo] = useState('')
   const [formFile, setFormFile] = useState<File | null>(null)
   const [saving, setSaving] = useState(false)
-  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [filterTitle, setFilterTitle] = useState('')
   const [filterMemo, setFilterMemo] = useState('')
   const [filterFile, setFilterFile] = useState<'all' | 'has' | 'none'>('all')
@@ -54,6 +55,60 @@ export default function DesignReviewPage() {
       return true
     })
   }, [reviews, filterTitle, filterMemo, filterFile])
+
+  const reviewKpis = useMemo(() => {
+    if (!selectedProject) return []
+    if (!selectedRevisionId) {
+      return [
+        {
+          label: '등록 검토',
+          value: '—',
+          sub: '리비전을 선택하면 집계됩니다',
+          badge: '대기',
+          badgeVariant: 'neutral' as const,
+        },
+        {
+          label: '엑셀 첨부',
+          value: '—',
+          sub: '—',
+          badge: '—',
+          badgeVariant: 'neutral' as const,
+        },
+        {
+          label: '필터 일치',
+          value: '—',
+          sub: '—',
+          badge: '—',
+          badgeVariant: 'neutral' as const,
+        },
+      ]
+    }
+    const withFile = reviews.filter((r) => !!r.file_path).length
+    const filterOn = !!filterTitle.trim() || !!filterMemo.trim() || filterFile !== 'all'
+    return [
+      {
+        label: '등록 검토',
+        value: reviews.length,
+        sub: '현재 리비전',
+        badge: 'Total',
+        badgeVariant: 'info' as const,
+      },
+      {
+        label: '엑셀 첨부',
+        value: withFile,
+        sub: '다운로드 가능',
+        badge: withFile ? '첨부' : '—',
+        badgeVariant: withFile ? ('success' as const) : ('neutral' as const),
+      },
+      {
+        label: '필터 일치',
+        value: filteredReviews.length,
+        sub: filterOn ? '필터 적용 중' : '전체 표시',
+        badge: filterOn ? 'Filtered' : 'All',
+        badgeVariant: filterOn ? ('warning' as const) : ('neutral' as const),
+      },
+    ]
+  }, [selectedProject, selectedRevisionId, reviews, filteredReviews, filterTitle, filterMemo, filterFile])
 
   const fetchReviews = useCallback(() => {
     if (!selectedRevisionId) {
@@ -187,76 +242,83 @@ export default function DesignReviewPage() {
       .finally(() => setSaving(false))
   }
 
-  const handleDelete = (review: DesignReview) => {
-    if (!user?.email || !window.confirm(`"${review.title}" 설계검토를 삭제하시겠습니까?`)) return
-    setDeletingId(review.id)
-    deleteDesignReviewApi(user.email, review.id)
-      .then((res) => {
-        if (res.success) fetchReviews()
-        else setError(res.error || '삭제에 실패했습니다.')
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : '삭제에 실패했습니다.'))
-      .finally(() => setDeletingId(null))
-  }
-
   if (!selectedProject) {
     return (
-      <section className="card">
-        <h2>설계검토 관리</h2>
-        <p className="auth-form__error" style={{ marginTop: '0.5rem' }}>
-          설계검토 관리는 <strong>프로젝트를 선택</strong>한 후 이용할 수 있습니다.
-        </p>
-        <p style={{ marginTop: '1rem' }}>
-          <Link to="/projects" className="btn btn--primary">
-            프로젝트 관리에서 선택하기
-          </Link>
-        </p>
-      </section>
+      <DesignMgmtPageShell
+        title="설계검토 관리"
+        titleEn="Design Review"
+        description="리비전별로 설계검토(엑셀)를 등록하고, 파일을 다운로드할 수 있습니다."
+        kpis={[]}
+      >
+        <section className="card" style={{ margin: 0 }}>
+          <p className="auth-form__error" style={{ marginTop: '0.5rem' }}>
+            설계검토 관리는 <strong>프로젝트를 선택</strong>한 후 이용할 수 있습니다.
+          </p>
+          <p style={{ marginTop: '1rem' }}>
+            <Link to="/projects" className="btn btn--primary">
+              프로젝트 관리에서 선택하기
+            </Link>
+          </p>
+        </section>
+      </DesignMgmtPageShell>
     )
   }
 
-  return (
-    <section className="card">
-      <h2>설계검토 관리</h2>
-      <p style={{ marginTop: '0.25rem', color: 'var(--main-text-muted)', fontSize: '0.9rem' }}>
-        설계검토는 엑셀 파일로 수행합니다.
-      </p>
-
-      {error && (
-        <div className="auth-form__error" style={{ marginTop: '0.5rem', marginBottom: '0.5rem' }}>
-          {error}
+  const toolbar =
+    selectedRevisionId ? (
+      <div className="design-doc__toolbar dm-shell__toolbar-inner">
+        <span className="design-doc__revision-label">
+          선택: {selectedPhase?.name} — {selectedRevision?.revision_name}
+        </span>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          {canManage && (
+            <button
+              type="button"
+              className="btn btn--danger btn--sm"
+              onClick={handleBulkDelete}
+              disabled={bulkDeleting || selectedIds.size === 0}
+              title={selectedIds.size === 0 ? '목록에서 삭제할 항목을 선택하세요' : undefined}
+            >
+              {bulkDeleting ? '삭제 중…' : `선택 항목 삭제${selectedIds.size > 0 ? ` (${selectedIds.size})` : ''}`}
+            </button>
+          )}
+          {canManage && (
+            <button type="button" className="btn btn--primary btn--sm" onClick={openCreate}>
+              설계검토 추가
+            </button>
+          )}
         </div>
-      )}
+      </div>
+    ) : null
 
-      {selectedRevisionId && (
-        <>
-          <div className="design-doc__toolbar">
-            <span className="design-doc__revision-label">
-              선택: {selectedPhase?.name} — {selectedRevision?.revision_name}
-            </span>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              {canManage && selectedIds.size > 0 && (
-                <button
-                  type="button"
-                  className="btn btn--danger btn--sm"
-                  onClick={handleBulkDelete}
-                  disabled={bulkDeleting}
-                >
-                  {bulkDeleting ? '삭제 중…' : `선택 항목 삭제 (${selectedIds.size})`}
-                </button>
-              )}
-              {canManage && (
-                <button type="button" className="btn btn--primary btn--sm" onClick={openCreate}>
-                  설계검토 추가
-                </button>
-              )}
+  return (
+    <>
+      <DesignMgmtPageShell
+        title="설계검토 관리"
+        titleEn="Design Review"
+        description="리비전별로 설계검토를 엑셀 파일로 등록하고, 이력을 관리할 수 있습니다."
+        kpis={reviewKpis}
+        projectTag={
+          <p className="dm-shell__project-line">
+            프로젝트: {selectedProject.name}
+            {selectedPhase && selectedRevision
+              ? ` · ${selectedPhase.name} / ${selectedRevision.revision_name}`
+              : ''}
+          </p>
+        }
+        toolbar={toolbar}
+        error={error || undefined}
+        loading={!!selectedRevisionId && loadingReviews}
+        loadingText="설계검토 목록을 불러오는 중…"
+        onRefresh={selectedRevisionId ? () => void fetchReviews() : undefined}
+        refreshDisabled={loadingReviews}
+      >
+        {selectedRevisionId ? (
+          <div className="dm-shell__panel">
+            <div className="dm-shell__panel-head">
+              <h2 className="dm-shell__panel-title">검토 목록</h2>
             </div>
-          </div>
-
-          {loadingReviews ? (
-            <p style={{ color: 'var(--main-text-muted)', marginTop: '1rem' }}>목록을 불러오는 중…</p>
-          ) : (
-            <div className="design-doc__table-wrap">
+            <div className="design-doc__table-wrap project-mgmt__table-wrap dm-shell__table-bleed">
               <table className="project-mgmt__table design-doc__table">
                 <thead>
                   <tr>
@@ -275,7 +337,7 @@ export default function DesignReviewPage() {
                     <th>제목</th>
                     <th>파일</th>
                     <th>비고</th>
-                    {canManage && <th>작업</th>}
+                    {canManage && <th>수정</th>}
                   </tr>
                   <tr className="design-doc__filter-row">
                     {canManage && <th />}
@@ -314,88 +376,89 @@ export default function DesignReviewPage() {
                     {canManage && <th />}
                   </tr>
                 </thead>
-                <tbody>
-                  {filteredReviews.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={canManage ? 5 : 4}
-                        className="project-mgmt__empty"
-                      >
-                        {reviews.length === 0
-                          ? '등록된 설계검토가 없습니다. ' +
-                            (canManage ? '설계검토 추가로 엑셀 파일을 등록하세요.' : '')
-                          : '필터 조건에 맞는 항목이 없습니다.'}
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredReviews.map((review) => (
-                      <tr key={review.id}>
-                        {canManage && (
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={selectedIds.has(review.id)}
-                              onChange={(e) => toggleSelect(review.id, e.target.checked)}
-                              aria-label={`${review.title} 선택`}
-                            />
-                          </td>
-                        )}
-                        <td>{review.title}</td>
-                        <td>
-                          {review.file_path ? (
-                            <a
-                              href={getDesignReviewFileUrl(review.id)}
-                              download={review.file_name ?? undefined}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                            >
-                              {review.file_name || '다운로드'}
-                            </a>
-                          ) : (
-                            '—'
-                          )}
-                        </td>
-                        <td>{review.memo ?? '—'}</td>
-                        {canManage && (
-                          <td>
-                            <button
-                              type="button"
-                              className="btn btn--sm btn--secondary"
-                              onClick={() => openEdit(review)}
-                            >
-                              수정
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn--sm btn--danger"
-                              onClick={() => handleDelete(review)}
-                              disabled={deletingId === review.id}
-                            >
-                              {deletingId === review.id ? '처리 중…' : '삭제'}
-                            </button>
-                          </td>
-                        )}
-                      </tr>
-                    ))
-                  )}
-                </tbody>
               </table>
+              {filteredReviews.length === 0 ? (
+                <div className="project-mgmt__empty" style={{ padding: '1rem' }}>
+                  {reviews.length === 0
+                    ? '등록된 설계검토가 없습니다. ' + (canManage ? '설계검토 추가로 엑셀 파일을 등록하세요.' : '')
+                    : '필터 조건에 맞는 항목이 없습니다.'}
+                </div>
+              ) : (
+                <VirtualDataGrid
+                  wrapClassName="virtual-data-grid virtual-data-grid--dm"
+                  gridTemplateColumns={
+                    canManage
+                      ? '40px minmax(100px,1.4fr) minmax(100px,1.2fr) minmax(88px,1fr) minmax(88px,0.9fr)'
+                      : 'minmax(100px,1.5fr) minmax(100px,1.3fr) minmax(88px,1.2fr)'
+                  }
+                  rowHeight={44}
+                  scrollResetKey={`${filterTitle}|${filterMemo}|${filterFile}|${filteredReviews.length}`}
+                  getKey={(review) => review.id}
+                  renderRow={(review) => (
+                    <>
+                      {canManage && (
+                        <span onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(review.id)}
+                            onChange={(e) => toggleSelect(review.id, e.target.checked)}
+                            aria-label={`${review.title} 선택`}
+                          />
+                        </span>
+                      )}
+                      <span>{review.title}</span>
+                      <span>
+                        {review.file_path ? (
+                          <a
+                            href={getDesignReviewFileUrl(review.id)}
+                            download={review.file_name ?? undefined}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {review.file_name || '다운로드'}
+                          </a>
+                        ) : (
+                          '—'
+                        )}
+                      </span>
+                      <span>{review.memo ?? '—'}</span>
+                      {canManage && (
+                        <span onClick={(e) => e.stopPropagation()}>
+                          <button type="button" className="btn btn--sm btn--secondary" onClick={() => openEdit(review)}>
+                            수정
+                          </button>
+                        </span>
+                      )}
+                    </>
+                  )}
+                  items={filteredReviews}
+                />
+              )}
             </div>
-          )}
-        </>
-      )}
-
-      {!selectedRevisionId && selectedPhaseId && (
-        <p style={{ color: 'var(--main-text-muted)', marginTop: '1rem' }}>
-          리비전을 선택하면 해당 리비전의 설계검토 목록이 표시됩니다.
-        </p>
-      )}
-
-      {!selectedPhaseId && !loadingPhases && (
-        <p style={{ color: 'var(--main-text-muted)', marginTop: '1rem' }}>
-          설계 차수와 리비전을 선택하세요. 설계일정 관리에서 차수·리비전을 먼저 등록해 두어야 합니다.
-        </p>
-      )}
+          </div>
+        ) : (
+          <div className="dm-shell__panel">
+            <div className="dm-shell__panel-head">
+              <h2 className="dm-shell__panel-title">검토 목록</h2>
+            </div>
+            <div className="dm-shell__panel-body">
+              {!selectedRevisionId && selectedPhaseId && (
+                <p style={{ color: 'var(--main-text-muted)', margin: 0 }}>
+                  리비전을 선택하면 해당 리비전의 설계검토 목록이 표시됩니다.
+                </p>
+              )}
+              {!selectedPhaseId && !loadingPhases && (
+                <p style={{ color: 'var(--main-text-muted)', margin: 0 }}>
+                  설계 차수와 리비전을 선택하세요. 설계일정 관리에서 차수·리비전을 먼저 등록해 두어야 합니다.
+                </p>
+              )}
+              {loadingPhases && !selectedPhaseId && (
+                <p style={{ color: 'var(--main-text-muted)', margin: 0 }}>설계 일정 정보를 불러오는 중…</p>
+              )}
+            </div>
+          </div>
+        )}
+      </DesignMgmtPageShell>
 
       {/* 추가/수정 모달 */}
       {modalOpen && (
@@ -500,6 +563,6 @@ export default function DesignReviewPage() {
           </div>
         </div>
       )}
-    </section>
+    </>
   )
 }

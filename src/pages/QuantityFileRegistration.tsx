@@ -39,6 +39,7 @@ import {
   type QuantityDong,
   type QuantityFloor,
 } from '../api/quantityFile'
+import { TrimbleConnectImportButton } from '../components/TrimbleConnectImportButton'
 
 function getApiErrorMessage(err: unknown, fallback: string): string {
   const msg = err instanceof Error ? err.message : String(err)
@@ -813,6 +814,30 @@ export default function QuantityFileRegistration() {
                   >
                     {bulkDeleting ? '삭제 중…' : `선택 항목 삭제 (${selectedIds.size})`}
                   </button>
+                )}
+                {canManage && user?.email && selectedProject && (
+                  <TrimbleConnectImportButton
+                    projectId={selectedProject.id}
+                    trimbleProjectLinked={!!selectedProject.trimble_connect_project_id}
+                    designRevisionId={selectedRevisionId}
+                    userEmail={user.email}
+                    canManage={canManage}
+                    onImported={() => {
+                      if (!selectedRevisionId) return
+                      setLoadingFiles(true)
+                      getQuantityFilesApi(selectedRevisionId)
+                        .then((res) => {
+                          if (res.success && res.files) setFiles(res.files)
+                          else setFiles([])
+                        })
+                        .catch(() => setFiles([]))
+                        .finally(() => setLoadingFiles(false))
+                    }}
+                    label="Connect에서 물량 가져오기"
+                    defaultImportModels={false}
+                    defaultImportDocuments={false}
+                    defaultImportQuantity
+                  />
                 )}
                 {canManage && (
                   <button type="button" className="btn btn--primary btn--sm" onClick={openCreate}>
@@ -3057,6 +3082,11 @@ export default function QuantityFileRegistration() {
                         {formFile.name}
                       </div>
                     )}
+                    <p style={{ fontSize: '0.8125rem', color: 'var(--main-text-muted)', marginTop: '0.5rem', lineHeight: 1.45 }}>
+                      지원 양식: <strong>부재별산출서</strong> 시트(층·부호·명칭·규격…), 반입 일정(부재번호·총물량 등),
+                      <strong> 부재별 집계표</strong>(헤더에 ID·도면번호·총물량·단위물량·가로·세로·두께(길이) 및 이형철근/하드웨어 열 — 시트 이름은 자유).
+                      집계표는 콘크리트 물량 행과 철근·부속 열마다 별도 행으로 읽습니다.
+                    </p>
                   </div>
                 )}
               </div>

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <Name>SBIM-TC-WEB</Name>
+    <RootNamespace>SBIM_TC_WEB</RootNamespace>
+    <StartupCommand>npm run dev:all</StartupCommand>
+    <WorkingDirectory>.</WorkingDirectory>
+    <OutputPath>.</OutputPath>
+    <ProjectHome>.</ProjectHome>
+    <StartWebBrowser>True</StartWebBrowser>
+    <StartWebBrowserUrl>http://localhost:5173</StartWebBrowserUrl>
+    <StartArguments></StartArguments>
+    <NodeExePath>$(PATH)</NodeExePath>
+    <AnalysisIgnoredDirectories>node_modules;dist;server\uploads;.git</AnalysisIgnoredDirectories>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <DebugSymbols>true</DebugSymbols>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="package.json" />
+    <Content Include="index.html" />
+    <Content Include="vite.config.ts" />
+    <Content Include="tsconfig.json" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Node.js Tools\Microsoft.NodejsTools.targets" Condition="Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Node.js Tools\Microsoft.NodejsTools.targets')" />
+</Project>

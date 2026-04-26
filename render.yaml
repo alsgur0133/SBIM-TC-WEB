@@ -1,0 +1,17 @@
+# Render.com 배포 설정 - https://dashboard.render.com 에서 이 저장소 연결 후 자동 배포
+services:
+  - type: web
+    name: sbim-tc-web
+    env: node
+    region: singapore
+    buildCommand: npm install && npm run build && cd server && npm install --omit=dev && cd ..
+    # 빌드 시 API 주소 비움 → 배포된 같은 주소에서 /api 사용
+    startCommand: node server/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        generateValue: true
+      # 프론트 빌드 시 같은 도메인에서 /api 쓰도록 (비워두면 상대 경로)
+      - key: VITE_API_URL
+        value: ""

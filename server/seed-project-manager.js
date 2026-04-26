@@ -11,11 +11,17 @@ if (!email) {
   process.exit(1)
 }
 
-const row = db.prepare('SELECT id, role FROM users WHERE email = ?').get(email)
-if (!row) {
-  console.error('해당 이메일 사용자가 없습니다:', email)
-  process.exit(1)
-}
-
-db.prepare("UPDATE users SET role = '프로젝트 관리자' WHERE email = ?").run(email)
-console.log(`"${email}" 사용자를 프로젝트 관리자로 설정했습니다. 로그아웃 후 다시 로그인하면 반영됩니다.`)
+db.init()
+  .then(async () => {
+    const row = await db.prepare('SELECT id, role FROM users WHERE email = ?').get(email)
+    if (!row) {
+      console.error('해당 이메일 사용자가 없습니다:', email)
+      process.exit(1)
+    }
+    await db.prepare("UPDATE users SET role = '프로젝트 관리자' WHERE email = ?").run(email)
+    console.log(`"${email}" 사용자를 프로젝트 관리자로 설정했습니다. 로그아웃 후 다시 로그인하면 반영됩니다.`)
+  })
+  .catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })

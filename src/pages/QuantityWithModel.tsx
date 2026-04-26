@@ -8,7 +8,8 @@ import {
   type QuantitySummaryRow,
   type QuantitySummaryData,
 } from '../api/quantityFile'
-import ModelViewer from './ModelViewer'
+import ModelViewerLoader from '../components/ModelViewerLoader'
+import { effectiveDesignRevisionIdForSync, postIfcViewerSync } from '../lib/ifcViewerSync'
 
 function sumCategory(row: QuantitySummaryData, concreteCols: string[], formworkCols: string[], rebarCols: string[]) {
   let c = 0
@@ -151,8 +152,6 @@ export default function QuantityWithModel() {
     )
   }
 
-  const firstModelId = models[0].id
-
   return (
     <section className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', height: 'calc(100vh - 120px)', minHeight: 400 }}>
       <h2 className="quantity-summary-page__title-hidden">물량·모델 보기</h2>
@@ -163,7 +162,7 @@ export default function QuantityWithModel() {
           {selectedRevision && <> · 리비전: <strong>{selectedRevision.revision_name}</strong></>}
         </p>
         <p style={{ fontSize: '0.8125rem', color: 'var(--main-text-muted)', margin: '0.25rem 0 0 0' }}>
-          층별집계표에서 <strong>행을 클릭</strong>하면 오른쪽 모델에서 해당 층이 하이라이트됩니다.
+          오른쪽은 <strong>Trimble Connect</strong> 모델 뷰어입니다. Trimble Connect로 로그인한 뒤 이용하세요. BRACE에만 등록된 IFC를 보려면 주소에 <code>?viewer=ifc</code>를 붙인 뒤 해당 화면으로 이동하세요.
         </p>
       </div>
       {error && <p className="auth-form__error" style={{ margin: '0.5rem 1rem' }}>{error}</p>}
@@ -204,6 +203,17 @@ export default function QuantityWithModel() {
                         onClick={() => {
                           setSelectedDong(r.dong ?? '')
                           setSelectedFloor(r.floor ?? '')
+                          const rev = effectiveDesignRevisionIdForSync(selectedRevisionId)
+                          const fl = (r.floor ?? '').trim()
+                          if (rev && fl) {
+                            postIfcViewerSync({
+                              v: 1,
+                              action: 'highlightFloor',
+                              designRevisionId: rev,
+                              projectId: selectedProject?.id,
+                              floor: fl,
+                            })
+                          }
                         }}
                       >
                         <td style={{ padding: '0.35rem 0.5rem' }}>{r.dong ?? '—'}</td>
@@ -220,11 +230,11 @@ export default function QuantityWithModel() {
           </div>
         </div>
         <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
-          <ModelViewer
-            modelId={firstModelId}
+          <ModelViewerLoader
             embedded
             onClose={handleCloseViewer}
-            highlightByFloor={selectedFloor ?? undefined}
+            designRevisionId={selectedRevisionId}
+            highlightByFloor={selectedFloor?.trim() || undefined}
           />
         </div>
       </div>

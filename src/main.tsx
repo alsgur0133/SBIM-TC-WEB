@@ -2,7 +2,12 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import ErrorBoundary from './components/ErrorBoundary'
+import { initThemeFromStorage } from './contexts/ThemeContext'
+import { installAppBusyFetch } from './lib/appBusy'
 import './index.css'
+
+initThemeFromStorage()
+installAppBusyFetch()
 
 const rootEl = document.getElementById('root')
 if (!rootEl) {

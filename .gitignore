@@ -1,8 +1,8 @@
 # Dependencies
 node_modules
 
-# Build
-dist
+# Build — 루트 Vite 출력만 무시 (/dist). publish-iis/dist 는 배포물이라 무시하면 안 됨.
+/dist
 *.local
 
 # Large archives (GitHub 100MB limit)
@@ -26,6 +26,9 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+
+# PG 백업 (로컬 덤프)
+backups/*.dump
 
 # Server DB
 server/sbim-tc.db

@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import { getProjectsApi, type Project } from '../api/projects'
-
-const STORAGE_KEY = 'sbim-tc-selected-project-id'
+import { SELECTED_PROJECT_ID_KEY } from '../lib/project-storage'
+import { useAuth } from './AuthContext'
 
 interface ProjectContextValue {
   projects: Project[]
@@ -11,11 +11,12 @@ interface ProjectContextValue {
   isLoading: boolean
 }
 
-const ProjectContext = createContext<ProjectContextValue | null>(null)
+/** 선택 프로젝트 등 — Provider 밖에서는 null (예: Trimble 뷰어에서 선택적 사용) */
+export const ProjectContext = createContext<ProjectContextValue | null>(null)
 
 function loadStoredProjectId(): string | null {
   try {
-    const id = localStorage.getItem(STORAGE_KEY)
+    const id = localStorage.getItem(SELECTED_PROJECT_ID_KEY)
     return id || null
   } catch {
     return null
@@ -23,11 +24,12 @@ function loadStoredProjectId(): string | null {
 }
 
 function saveStoredProjectId(projectId: string | null) {
-  if (projectId) localStorage.setItem(STORAGE_KEY, projectId)
-  else localStorage.removeItem(STORAGE_KEY)
+  if (projectId) localStorage.setItem(SELECTED_PROJECT_ID_KEY, projectId)
+  else localStorage.removeItem(SELECTED_PROJECT_ID_KEY)
 }
 
 export function ProjectProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth()
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProject, setSelectedProjectState] = useState<Project | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -53,8 +55,13 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   useEffect(() => {
+    if (!user) {
+      setSelectedProjectState(null)
+      setProjects([])
+      return
+    }
     loadProjects()
-  }, [loadProjects])
+  }, [user?.id, loadProjects])
 
   const setSelectedProject = useCallback((project: Project | null) => {
     setSelectedProjectState(project)

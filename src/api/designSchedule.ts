@@ -1,5 +1,4 @@
-const API_BASE =
-  import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? '' : 'http://localhost:5001')
+import { API_BASE } from './config'
 
 export interface DesignPhase {
   id: string
@@ -28,11 +27,34 @@ interface PhasesResponse {
   phases?: DesignPhase[]
 }
 
+/** 설계일정 저장 후 Trimble Connect 폴더 동기화 결과(선택) */
+export type TrimbleScheduleFolderSync =
+  | { skipped: true; reason: string; hint?: string }
+  | {
+      ok: true
+      path: string
+      phaseFolderId?: string
+      revisionFolderId?: string
+      phaseExisted?: boolean
+      revisionExisted?: boolean
+      renamed?: boolean
+    }
+  | { ok: true; note?: string }
+  | { ok: false; error: string; status?: number; hint?: string }
+
+interface ScheduleDeleteResponse {
+  success: boolean
+  error?: string
+  message?: string
+  trimbleFolders?: TrimbleScheduleFolderSync | null
+}
+
 interface PhaseMutateResponse {
   success: boolean
   error?: string
   phase?: DesignPhase
   message?: string
+  trimbleFolders?: TrimbleScheduleFolderSync | null
 }
 
 interface RevisionsResponse {
@@ -46,6 +68,7 @@ interface RevisionMutateResponse {
   error?: string
   revision?: DesignRevision
   message?: string
+  trimbleFolders?: TrimbleScheduleFolderSync | null
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -104,7 +127,9 @@ async function put<T>(path: string, body: object): Promise<T> {
   return data as T
 }
 
-async function del(path: string): Promise<{ success: boolean; error?: string; message?: string }> {
+async function del<T extends { success: boolean; error?: string; message?: string } = { success: boolean; error?: string; message?: string }>(
+  path: string
+): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE' })
   const text = await res.text()
   let data: unknown = {}
@@ -117,7 +142,7 @@ async function del(path: string): Promise<{ success: boolean; error?: string; me
     const err = data as { error?: string }
     throw new Error(err.error || `요청에 실패했습니다. (${res.status})`)
   }
-  return data as { success: boolean; error?: string; message?: string }
+  return data as T
 }
 
 export async function getPhasesApi(projectId?: string): Promise<PhasesResponse> {
@@ -125,17 +150,18 @@ export async function getPhasesApi(projectId?: string): Promise<PhasesResponse> 
   return get<PhasesResponse>(`/api/design-schedule/phases${q}`)
 }
 
+/** sort_order는 서버에서 프로젝트별로 자동 부여합니다. */
 export async function createPhaseApi(
   userEmail: string,
   name: string,
-  sortOrder?: number,
-  projectId?: string
+  projectId?: string,
+  trimbleAccessToken?: string
 ): Promise<PhaseMutateResponse> {
   return post<PhaseMutateResponse>('/api/design-schedule/phases', {
     userEmail,
     name,
-    sort_order: sortOrder ?? 0,
     project_id: projectId || null,
+    ...(trimbleAccessToken ? { trimbleAccessToken } : {}),
   })
 }
 
@@ -144,18 +170,26 @@ export async function updatePhaseApi(
   phaseId: string,
   name: string,
   sortOrder?: number,
-  projectId?: string
+  projectId?: string,
+  trimbleAccessToken?: string
 ): Promise<PhaseMutateResponse> {
   return put<PhaseMutateResponse>(`/api/design-schedule/phases/${encodeURIComponent(phaseId)}`, {
     userEmail,
     name,
     sort_order: sortOrder ?? 0,
     project_id: projectId ?? null,
+    ...(trimbleAccessToken ? { trimbleAccessToken } : {}),
   })
 }
 
-export async function deletePhaseApi(userEmail: string, phaseId: string): Promise<{ success: boolean; error?: string; message?: string }> {
-  return del(`/api/design-schedule/phases/${encodeURIComponent(phaseId)}?userEmail=${encodeURIComponent(userEmail)}`)
+export async function deletePhaseApi(
+  userEmail: string,
+  phaseId: string,
+  trimbleAccessToken?: string
+): Promise<ScheduleDeleteResponse> {
+  const q = new URLSearchParams({ userEmail })
+  if (trimbleAccessToken) q.set('trimbleAccessToken', trimbleAccessToken)
+  return del<ScheduleDeleteResponse>(`/api/design-schedule/phases/${encodeURIComponent(phaseId)}?${q.toString()}`)
 }
 
 export async function getRevisionsApi(phaseId: string): Promise<RevisionsResponse> {
@@ -169,7 +203,8 @@ export async function createRevisionApi(
   plannedDate?: string,
   actualDate?: string,
   status?: string,
-  memo?: string
+  memo?: string,
+  trimbleAccessToken?: string
 ): Promise<RevisionMutateResponse> {
   return post<RevisionMutateResponse>(`/api/design-schedule/phases/${encodeURIComponent(phaseId)}/revisions`, {
     userEmail,
@@ -178,6 +213,7 @@ export async function createRevisionApi(
     actual_date: actualDate || null,
     status: status || '예정',
     memo: memo || null,
+    ...(trimbleAccessToken ? { trimbleAccessToken } : {}),
   })
 }
 
@@ -188,7 +224,8 @@ export async function updateRevisionApi(
   plannedDate?: string,
   actualDate?: string,
   status?: string,
-  memo?: string
+  memo?: string,
+  trimbleAccessToken?: string
 ): Promise<RevisionMutateResponse> {
   return put<RevisionMutateResponse>(`/api/design-schedule/revisions/${encodeURIComponent(revisionId)}`, {
     userEmail,
@@ -197,9 +234,16 @@ export async function updateRevisionApi(
     actual_date: actualDate || null,
     status: status || '예정',
     memo: memo || null,
+    ...(trimbleAccessToken ? { trimbleAccessToken } : {}),
   })
 }
 
-export async function deleteRevisionApi(userEmail: string, revisionId: string): Promise<{ success: boolean; error?: string; message?: string }> {
-  return del(`/api/design-schedule/revisions/${encodeURIComponent(revisionId)}?userEmail=${encodeURIComponent(userEmail)}`)
+export async function deleteRevisionApi(
+  userEmail: string,
+  revisionId: string,
+  trimbleAccessToken?: string
+): Promise<ScheduleDeleteResponse> {
+  const q = new URLSearchParams({ userEmail })
+  if (trimbleAccessToken) q.set('trimbleAccessToken', trimbleAccessToken)
+  return del<ScheduleDeleteResponse>(`/api/design-schedule/revisions/${encodeURIComponent(revisionId)}?${q.toString()}`)
 }

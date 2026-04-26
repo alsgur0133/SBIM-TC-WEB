@@ -1,0 +1,561 @@
+/* 설계일정·설계도서·설계검토 — Executive 카드형 (라이트/다크: index.css 변수) */
+
+.dm-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  padding: var(--app-page-padding, 1rem 1.25rem 1.25rem);
+  box-sizing: border-box;
+  background: var(--dm-shell-page-bg, var(--main-bg-sub, #f1f4f9));
+}
+
+.dm-shell__top {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 1rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--main-border, #e2e8f0);
+}
+
+.dm-shell__top-spacer {
+  min-width: 0;
+}
+
+.dm-shell__top-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem;
+}
+
+.dm-shell__icon-btn {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 10px;
+  border: 1px solid var(--main-border, #e2e8f0);
+  background: var(--main-surface, #fff);
+  color: var(--main-text-muted, #64748b);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.dm-shell__icon-btn:hover:not(:disabled) {
+  color: var(--accent, #4f46e5);
+  border-color: var(--border-strong, #cbd5e1);
+}
+
+.dm-shell__icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dm-shell__user {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.dm-shell__user-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.08rem;
+  min-width: 0;
+}
+
+.dm-shell__user-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--main-text, #0f172a);
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-shell__user-role {
+  font-size: 0.72rem;
+  color: var(--main-text-muted, #64748b);
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-shell__avatar {
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #6366f1, #4338ca);
+  flex-shrink: 0;
+}
+
+.dm-shell__hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.dm-shell__title {
+  margin: 0 0 0.4rem;
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--main-text, #0f172a);
+}
+
+.dm-shell__title-en {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--main-text-muted, #64748b);
+  margin-left: 0.5rem;
+}
+
+.dm-shell__lead {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--main-text-muted, #64748b);
+  line-height: 1.45;
+  max-width: 46rem;
+}
+
+.dm-shell__project-line {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--main-text, #334155);
+}
+
+.dm-shell__hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.dm-shell__btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 1rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  border-radius: 10px;
+  border: 1px solid var(--main-border, #e2e8f0);
+  background: var(--main-surface, #fff);
+  color: var(--main-text, #334155);
+  cursor: pointer;
+}
+
+.dm-shell__btn-ghost:hover:not(:disabled) {
+  border-color: var(--border-strong, #cbd5e1);
+}
+
+.dm-shell__btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 1.1rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  border-radius: 10px;
+  border: none;
+  background: #0f172a;
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.2);
+}
+
+:root[data-theme='dark'] .dm-shell__btn-primary {
+  background: #e8eaef;
+  color: #0f172a;
+  box-shadow: none;
+}
+
+.dm-shell__btn-primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.dm-shell__btn-danger-text {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 1rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  border-radius: 10px;
+  border: 1px solid #fecaca;
+  background: transparent;
+  color: #b91c1c;
+  cursor: pointer;
+}
+
+:root[data-theme='dark'] .dm-shell__btn-danger-text {
+  border-color: #7f1d1d;
+  color: #fca5a5;
+}
+
+.dm-shell__kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+@media (max-width: 1024px) {
+  .dm-shell__kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .dm-shell__kpi-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dm-shell__kpi {
+  background: var(--main-surface, #fff);
+  border: 1px solid var(--main-border, #e8ecf1);
+  border-radius: 14px;
+  padding: 1rem 1.15rem;
+  box-shadow: var(--shadow, 0 4px 20px rgba(15, 23, 42, 0.06));
+}
+
+.dm-shell__kpi-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.dm-shell__kpi-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--main-text-muted, #64748b);
+}
+
+.dm-shell__kpi-value {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--main-text, #0f172a);
+  line-height: 1.1;
+}
+
+.dm-shell__kpi-sub {
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--main-text-muted, #64748b);
+}
+
+.dm-shell__kpi-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.dm-shell__kpi-badge--success {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.dm-shell__kpi-badge--warning {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.dm-shell__kpi-badge--info {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.dm-shell__kpi-badge--neutral {
+  background: var(--main-bg-sub, #f1f5f9);
+  color: var(--main-text-muted, #64748b);
+}
+
+:root[data-theme='dark'] .dm-shell__kpi-badge--success {
+  background: rgba(34, 197, 94, 0.2);
+  color: #86efac;
+}
+
+:root[data-theme='dark'] .dm-shell__kpi-badge--warning {
+  background: rgba(248, 113, 113, 0.2);
+  color: #fca5a5;
+}
+
+:root[data-theme='dark'] .dm-shell__kpi-badge--info {
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+}
+
+.dm-shell__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.dm-shell__toolbar-inner {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.dm-shell__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.dm-shell__panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--main-surface, #fff);
+  border: 1px solid var(--main-border, #e8ecf1);
+  border-radius: 14px;
+  box-shadow: var(--shadow, 0 8px 30px rgba(15, 23, 42, 0.06));
+  overflow: hidden;
+}
+
+.dm-shell__panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.9rem 1.15rem;
+  border-bottom: 1px solid var(--main-border, #f1f5f9);
+  background: var(--main-bg-sub, #fafbfc);
+}
+
+.dm-shell__panel-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--main-text, #0f172a);
+}
+
+.dm-shell__panel-body {
+  padding: 1rem 1.15rem;
+  flex: 1;
+  min-height: 0;
+}
+
+.dm-shell__error {
+  margin: 0;
+  padding: 0.65rem 1rem;
+  border-radius: 10px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  font-size: 0.875rem;
+}
+
+:root[data-theme='dark'] .dm-shell__error {
+  background: rgba(127, 29, 29, 0.35);
+  border-color: #7f1d1d;
+  color: #fecaca;
+}
+
+.dm-shell__notice {
+  margin: 0;
+  padding: 0.65rem 1rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-soft, rgba(79, 70, 229, 0.12)) 70%, var(--main-surface, #fff));
+  border: 1px solid color-mix(in srgb, var(--accent, #4f46e5) 28%, var(--main-border, #e2e8f0));
+  color: var(--main-text, #0f172a);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+:root[data-theme='dark'] .dm-shell__notice {
+  background: rgba(99, 102, 241, 0.12);
+  border-color: rgba(129, 140, 248, 0.35);
+  color: var(--main-text, #e8eaf0);
+}
+
+.dm-shell__loading {
+  padding: 2rem;
+  text-align: center;
+  color: var(--main-text-muted, #64748b);
+}
+
+/* 표 영역: 기존 project-mgmt__table-wrap 과 함께 사용 */
+.dm-shell .project-mgmt__table-wrap {
+  border-radius: 0 0 12px 12px;
+}
+
+.dm-shell .design-doc__table-wrap {
+  border-radius: 0 0 12px 12px;
+}
+
+.dm-shell__table-bleed {
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
+.dm-shell__notice {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-radius: 10px;
+  background: rgba(180, 120, 0, 0.1);
+  border: 1px solid rgba(180, 120, 0, 0.32);
+  color: var(--main-text, #0f172a);
+  font-size: 0.875rem;
+  white-space: pre-line;
+}
+
+:root[data-theme='dark'] .dm-shell__notice {
+  background: rgba(234, 179, 8, 0.12);
+  border-color: rgba(250, 204, 21, 0.35);
+  color: var(--main-text, #e8eaef);
+}
+
+/* 모델 관리 — 목록: 헤더·가상 그리드 열 맞춤, 패널 높이 채움 */
+.dm-shell__panel > .model-mgmt-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-top: 0;
+  overflow: hidden;
+}
+
+.model-mgmt-list .model-mgmt-list__table.design-doc__table {
+  table-layout: fixed;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding-inline: 0.45rem;
+}
+
+.model-mgmt-list__col-check {
+  width: 40px;
+}
+
+.model-mgmt-list .model-mgmt-list__table thead th {
+  padding: 0.5rem 0.35rem;
+  vertical-align: middle;
+}
+
+.model-mgmt-list .model-mgmt-list__table thead tr:first-child th {
+  padding-top: 0.55rem;
+  padding-bottom: 0.45rem;
+}
+
+.model-mgmt-list__th-check {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.model-mgmt-list .design-doc__filter-row th {
+  padding: 0.35rem 0.35rem;
+}
+
+.model-mgmt-list .design-doc__filter-row .design-doc__filter-input {
+  max-width: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.model-mgmt-list__empty {
+  flex: 1;
+  min-height: 5rem;
+  padding: 1.25rem 1rem !important;
+  margin: 0;
+  border: 1px solid var(--main-border, #e2e8f0);
+  border-top: none;
+  border-radius: 0 0 12px 12px;
+  background: var(--main-surface, #fff);
+  box-sizing: border-box;
+}
+
+.model-mgmt-list__grid.virtual-data-grid {
+  flex: 1;
+  min-height: 200px;
+  margin-top: 0;
+  border-top: none;
+  border-radius: 0 0 12px 12px;
+}
+
+.model-mgmt-list__grid .virtual-data-grid__body {
+  min-height: 120px;
+}
+
+/* 모델 관리 — 등록 모델: 칸·가로줄 구분(속성 패널과 같은 테이블형) */
+.model-mgmt-list .model-mgmt-list__table thead th:not(:last-child) {
+  border-right: 1px solid var(--main-border, #e2e8f0);
+}
+
+.model-mgmt-list__grid .virtual-data-grid__body {
+  padding-inline: 0;
+}
+
+.model-mgmt-list__grid .virtual-list__row {
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.model-mgmt-list__grid .virtual-data-grid__row {
+  gap: 0 !important;
+  height: 100%;
+  min-height: 0;
+  align-content: stretch;
+  align-items: stretch;
+  cursor: default;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-bottom: 1px solid var(--main-border, #e2e8f0);
+  transition: background 0.12s ease;
+}
+
+.model-mgmt-list__grid .virtual-data-grid__row > * {
+  padding: 0.4rem 0.5rem;
+  min-width: 0;
+  border-right: 1px solid var(--main-border, #e2e8f0);
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+}
+
+.model-mgmt-list__grid .virtual-data-grid__row > *:last-child {
+  border-right: none;
+}
+
+.model-mgmt-list__grid .virtual-data-grid__row:hover {
+  background: var(--fill-row-hover, #f8fafc);
+}
+
+.model-mgmt-list__grid .virtual-data-grid__row a,
+.model-mgmt-list__grid .virtual-data-grid__row button {
+  cursor: pointer;
+}

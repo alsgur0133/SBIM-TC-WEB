@@ -1,0 +1,11 @@
+vite.config.ts(또는 .js) 에서 base 가 빌드 시 서브경로와 맞아야 합니다.
+
+  const basePath = process.env.VITE_BASE_PATH
+  const base = basePath ? `/${basePath.replace(/^\/|\/$/g, '')}/` : '/'
+
+  export default defineConfig({
+    base,
+    // ... 기존 plugins, resolve 등
+  })
+
+루트(/) 배포만 할 때는 VITE_BASE_PATH 를 비우고 빌드하는 방식은 docs/빌드배포-다른프로젝트에-적용하기.md 를 참고하세요.

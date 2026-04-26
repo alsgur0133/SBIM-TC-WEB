@@ -1,34 +1,182 @@
 :root {
-  --radius: 14px;
-  --radius-sm: 9px;
-  --font-sans: 'Pretendard', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color-scheme: light;
 
-  /* 메인 앱 - 밝은 테마 (부드러운 그라데이션 배경 + 뉴트럴 서페이스) */
-  --bg: radial-gradient(circle at top left, #e0f2fe 0, #eef2ff 35%, #f9fafb 100%);
+  /* radius: 앱 전반 통일 (2024+ 소프트 코너) */
+  --radius: 16px;
+  --radius-sm: 10px;
+  --radius-xs: 7px;
+  --font-sans:
+    'Pretendard Variable',
+    Pretendard,
+    -apple-system,
+    BlinkMacSystemFont,
+    system-ui,
+    'Segoe UI',
+    sans-serif;
+
+  /* 배경: 은은한 메시 그라데이션 (과하지 않게) */
+  --bg: radial-gradient(120% 80% at 0% -10%, #e0e7ff 0%, transparent 55%),
+    radial-gradient(90% 60% at 100% 0%, #dbeafe 0%, transparent 50%),
+    linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
   --surface: #ffffff;
-  --border: #e5e7eb;
-  --text: #020617;
+  --surface-elevated: #ffffff;
+  --surface-hover: #f1f5f9;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --text: #0f172a;
   --text-muted: #64748b;
-  --accent: #2563eb;        /* indigo-600 */
-  --accent-hover: #1d4ed8;  /* indigo-700 */
-  --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-  --shadow-md: 0 18px 45px rgba(15, 23, 42, 0.12);
+  /* 액센트: 인디고 계열 (신뢰·B2B SaaS 트렌드) */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: rgba(79, 70, 229, 0.12);
+  --shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 8px 24px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 4px 6px rgba(15, 23, 42, 0.05), 0 20px 40px rgba(15, 23, 42, 0.08);
+  --ring: 0 0 0 3px rgba(79, 70, 229, 0.35);
 
-  /* 사이드바 - 다크 톤 네비게이션 */
-  --sidebar-bg: #020617;
-  --sidebar-border: #111827;
-  --sidebar-text: #e5e7eb;
-  --sidebar-text-muted: #9ca3af;
-  --sidebar-active-bg: rgba(37, 99, 235, 0.16);
-  --sidebar-active-border: #60a5fa;
-  --sidebar-hover-bg: rgba(15, 23, 42, 0.88);
+  /* 사이드바: 딥 슬레이트 + 미세 톤 */
+  --sidebar-bg: linear-gradient(180deg, #0f172a 0%, #020617 45%, #020617 100%);
+  --sidebar-bg-solid: #020617;
+  --sidebar-border: rgba(148, 163, 184, 0.12);
+  --sidebar-text: #f1f5f9;
+  --sidebar-text-muted: #94a3b8;
+  --sidebar-active-bg: rgba(99, 102, 241, 0.18);
+  --sidebar-active-border: #818cf8;
+  --sidebar-hover-bg: rgba(148, 163, 184, 0.1);
 
-  /* 메인 콘텐츠 */
+  /* 메인 콘텐츠 (App.css 호환 별칭) */
+  --primary: var(--accent);
   --main-bg: transparent;
-  --main-surface: #ffffff;
-  --main-border: #e5e7eb;
-  --main-text: #020617;
-  --main-text-muted: #64748b;
+  --main-surface: var(--surface);
+  --main-accent-soft: var(--accent-soft);
+  --main-bg-sub: #f1f5f9;
+  --main-border: var(--border);
+  --main-text: var(--text);
+  --main-text-muted: var(--text-muted);
+
+  --dm-shell-page-bg: #f1f4f9;
+  /* Executive/목록형 페이지 배경·얇은 테두리 (Dashboard, 프로젝트 목록 등) */
+  --main-bg-subtle: #f1f4f9;
+  --border-subtle: #e2e8f0;
+  /* 라이트 모드에서 진한 솔리드 버튼·페이지네이션 */
+  --ui-solid-bg: #0f172a;
+  --ui-solid-fg: #ffffff;
+  --ui-solid-hover: #1e293b;
+  --ui-solid-border: #0f172a;
+
+  /* 본문 콘텐츠(브레드크럼 아래) 공통 안쪽 여백 — dock 전체화면 제외 페이지 */
+  --app-page-padding: 1.125rem 1.35rem 1.5rem;
+
+  /* 표·패널·헤더 크롬 — 라이트 */
+  --fill-muted: #f1f5f9;
+  --fill-soft: #f8fafc;
+  --fill-softer: #fafafa;
+  --fill-row-hover: #f8fafc;
+  --fill-row-hover-accent: #ecfdf5;
+  --fill-selected: #e4e9ff;
+  --fill-selected-ring: rgba(79, 70, 229, 0.28);
+  --chrome-header-bg: rgba(255, 255, 255, 0.9);
+  --chrome-breadcrumb-bg: rgba(248, 250, 252, 0.78);
+  --badge-success-bg: #dcfce7;
+  --badge-success-fg: #166534;
+  --badge-danger-bg: #fee2e2;
+  --badge-danger-fg: #991b1b;
+}
+
+/* 다크 모드 (Layout에서 테마 전환 시 documentElement[data-theme="dark"]) */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: linear-gradient(165deg, #0f1218 0%, #0b0d12 42%, #07080c 100%);
+  --surface: #131822;
+  --surface-elevated: #181e2a;
+  --surface-hover: #222a38;
+  --border: #2a3344;
+  --border-strong: #3d4a5f;
+  --text: #e8eaf0;
+  --text-muted: #8b95a8;
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --accent-soft: rgba(129, 140, 248, 0.2);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 28px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 24px rgba(0, 0, 0, 0.45);
+
+  --sidebar-bg: linear-gradient(180deg, #020617 0%, #020617 100%);
+  --sidebar-bg-solid: #020617;
+  --sidebar-border: rgba(148, 163, 184, 0.14);
+  --sidebar-text: #f1f5f9;
+  --sidebar-text-muted: #94a3b8;
+  --sidebar-active-bg: rgba(99, 102, 241, 0.22);
+  --sidebar-active-border: #a5b4fc;
+  --sidebar-hover-bg: rgba(148, 163, 184, 0.12);
+
+  --main-bg: transparent;
+  --main-surface: var(--surface);
+  --main-accent-soft: var(--accent-soft);
+  --main-bg-sub: #10141c;
+  --main-border: var(--border);
+  --main-text: var(--text);
+  --main-text-muted: var(--text-muted);
+
+  --dm-shell-page-bg: #0e1118;
+  --main-bg-subtle: #0e1118;
+  --border-subtle: #2a3344;
+  --ui-solid-bg: #6366f1;
+  --ui-solid-fg: #ffffff;
+  --ui-solid-hover: #4f46e5;
+  --ui-solid-border: #6366f1;
+
+  --fill-muted: rgba(30, 37, 50, 0.88);
+  --fill-soft: rgba(24, 29, 40, 0.94);
+  --fill-softer: rgba(18, 22, 30, 0.96);
+  --fill-row-hover: rgba(148, 163, 184, 0.07);
+  --fill-row-hover-accent: rgba(45, 212, 191, 0.08);
+  --fill-selected: rgba(99, 102, 241, 0.26);
+  --fill-selected-ring: rgba(165, 180, 252, 0.42);
+  /* 모델 정보 등록 모델 표: 다크에서도 가로·세로 구분선이 보이도록 */
+  --model-info-list-rule: rgba(148, 163, 184, 0.42);
+  --chrome-header-bg: rgba(19, 24, 34, 0.92);
+  --chrome-breadcrumb-bg: rgba(19, 24, 34, 0.68);
+  --badge-success-bg: rgba(34, 197, 94, 0.16);
+  --badge-success-fg: #86efac;
+  --badge-danger-bg: rgba(248, 113, 113, 0.12);
+  --badge-danger-fg: #fca5a5;
+}
+
+:root[data-theme='dark'] ::selection {
+  background: rgba(129, 140, 248, 0.35);
+  color: var(--text);
+}
+
+:root[data-theme='dark'] * {
+  scrollbar-color: rgba(148, 163, 184, 0.28) transparent;
+}
+
+:root[data-theme='dark'] ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+:root[data-theme='dark'] ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+:root[data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.42);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 *,
@@ -41,9 +189,7 @@ html {
   font-size: 16px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}
-
-html {
+  text-rendering: optimizeLegibility;
   height: 100%;
 }
 
@@ -53,9 +199,15 @@ body {
   height: 100%;
   font-family: var(--font-sans);
   background: var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   line-height: 1.6;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
 }
 
 #root {
@@ -63,4 +215,92 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
+}
+
+:root[data-theme='light'],
+:root:not([data-theme]) {
+  scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+}
+
+/* 라이트 모드 WebKit 스크롤바 (다크는 아래 :root[data-theme='dark'] 규칙이 우선) */
+:root[data-theme='light'] ::-webkit-scrollbar,
+:root:not([data-theme]) ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+:root[data-theme='light'] ::-webkit-scrollbar-thumb,
+:root:not([data-theme]) ::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.38);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+:root[data-theme='light'] ::-webkit-scrollbar-thumb:hover,
+:root:not([data-theme]) ::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 85, 105, 0.5);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+/* 포커스: 키보드 사용자만 링 (최신 접근성 트렌드) */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button:focus-visible,
+a:focus-visible,
+[role='button']:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 전역 API 진행 표시(AppBusyOverlay) */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.app-busy-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 10050;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    var(--accent, #4f46e5),
+    #818cf8,
+    var(--accent, #4f46e5)
+  );
+  background-size: 200% 100%;
+  animation: app-busy-shimmer 0.9s linear infinite;
+  box-shadow: 0 0 8px rgba(79, 70, 229, 0.35);
+}
+
+@keyframes app-busy-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }

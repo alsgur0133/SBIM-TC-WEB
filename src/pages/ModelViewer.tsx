@@ -10,7 +10,31 @@ import {
   IFCRELAGGREGATES,
   IFCRELCONTAINEDINSPATIALSTRUCTURE,
 } from 'web-ifc'
+import { useAuth } from '../contexts/AuthContext'
 import { getDesignModelFileUrl, getDesignModelsApi, type DesignModel } from '../api/designModel'
+import './ModelViewer.css'
+import { getQuantityRevisionItemsApi, type QuantityRevisionItem } from '../api/quantityFile'
+import {
+  extractIfcQuantityLines,
+  formatIfcQuantitySummary,
+  formatIfcQuantityTooltip,
+  type IfcQtyLine,
+} from '../utils/ifcQuantityExtract'
+import {
+  isSpatialOrAssemblyIfcType,
+  loadObjectListScope,
+  MODELVIEWER_OBJECT_SCOPE_KEY,
+  saveObjectListScope,
+  type ObjectListScopeMode,
+} from '../lib/ifc-object-list-scope'
+import {
+  effectiveDesignRevisionIdForSync,
+  postIfcViewerSync,
+  subscribeIfcViewerSync,
+  type IfcViewerSyncPayload,
+} from '../lib/ifcViewerSync'
+import { useProject } from '../contexts/ProjectContext'
+import { VirtualList } from '../components/VirtualList'
 
 type IFCModelLike = THREE.Mesh & {
   modelID?: number
@@ -40,6 +64,54 @@ export interface SpatialStructureNode {
   modelIndex?: number
   /** 계측구조용: 타입별 그룹 등 합성 노드의 expressID 목록 */
   ids?: number[]
+}
+
+const BOTTOM_PANEL_H = 208
+/** 하단 객체 목록 가상 스크롤 행 높이(px) */
+const OBJECT_PANEL_ROW_HEIGHT = 26
+/** GlobalId 색인: 한 배치당 최대 동시 getItemProperties (작게 유지해 메인 스레드·WASM 부하 완화) */
+const GUID_INDEX_INNER_CONCURRENCY = 20
+/** GlobalId 색인: 배치 크기(이만큼 처리 후 rAF로 한 프레임 양보) */
+const GUID_INDEX_BATCH = 128
+
+function extractIfcGlobalId(props: Record<string, unknown>): string | null {
+  const raw = props.GlobalId ?? props.globalId
+  if (raw == null) return null
+  if (typeof raw === 'string') return raw
+  if (typeof raw === 'object' && raw !== null && 'value' in (raw as object)) {
+    const v = (raw as { value: unknown }).value
+    return v != null ? String(v) : null
+  }
+  return null
+}
+
+function normalizeIfcGuid(s: string): string {
+  return String(s).replace(/-/g, '').replace(/#/g, '').toUpperCase()
+}
+
+type IfcQtyCacheEntry = { status: 'loading' | 'ok' | 'empty' | 'error'; lines: IfcQtyLine[] }
+
+async function getIfcItemPropertiesForViewer(
+  models: IFCModelLike[],
+  modelIndex: number,
+  expressId: number,
+  recursive: boolean
+): Promise<Record<string, unknown>> {
+  const m = models[modelIndex] ?? models[0]
+  if (!m) return {}
+  const modelID = typeof m.modelID === 'number' ? m.modelID : 0
+  try {
+    if (m.getItemProperties) {
+      const gp = m.getItemProperties as (id: number, rec?: boolean) => Promise<Record<string, unknown>>
+      return await gp(expressId, recursive)
+    }
+    if (m.ifcManager?.getItemProperties) {
+      return await m.ifcManager.getItemProperties(modelID, expressId, recursive)
+    }
+  } catch {
+    /* ignore */
+  }
+  return {}
 }
 
 /** 노드의 자식 목록 (children / aggregates+spatial 모두 처리) */
@@ -400,8 +472,8 @@ function createFilteredGeometry(
   return out
 }
 
-/** 선택된 expressID에 해당하는 면들의 바운딩 박스 중심(월드 좌표) 반환 */
-function getBoundingBoxCenterForExpressId(model: IFCModelLike, expressIdInt: number): THREE.Vector3 | null {
+/** 선택된 expressID에 해당하는 면들의 월드 바운딩 박스 */
+function getExpressIdBoundingBox(model: IFCModelLike, expressIdInt: number): THREE.Box3 | null {
   const box = new THREE.Box3()
   let hasAny = false
   model.updateMatrixWorld(true)
@@ -442,9 +514,14 @@ function getBoundingBoxCenterForExpressId(model: IFCModelLike, expressIdInt: num
     }
   })
   if (!hasAny) return null
-  const center = new THREE.Vector3()
-  box.getCenter(center)
-  return center
+  return box
+}
+
+/** 선택된 expressID에 해당하는 면들의 바운딩 박스 중심(월드 좌표) 반환 */
+function getBoundingBoxCenterForExpressId(model: IFCModelLike, expressIdInt: number): THREE.Vector3 | null {
+  const box = getExpressIdBoundingBox(model, expressIdInt)
+  if (!box) return null
+  return box.getCenter(new THREE.Vector3())
 }
 
 /** 객체 속성을 키-값 목록으로 평탄화 (중첩 객체/배열 포함) */
@@ -624,7 +701,11 @@ function ObjectPropertiesTable({
   )
 }
 
-const WASM_PATH = '/wasm/'
+/** 서브경로 배포 시(예: /SBIM-TC-WEB) wasm 요청 경로에 base 포함 */
+const WASM_PATH =
+  (typeof window !== 'undefined' && window.__BASE_PATH__)
+    ? String(window.__BASE_PATH__).replace(/\/$/, '') + '/wasm/'
+    : '/wasm/'
 
 /**
  * IFC 파일 URL을 fetch 후 web-ifc로 열어 계층 구조만 읽기 (Node 스크립트와 동일 방식).
@@ -928,6 +1009,14 @@ async function buildSpatialStructureForModel(
   return root ? cloneSpatialNode(root) : null
 }
 
+interface ObjectPanelRow {
+  expressID: number
+  type: string
+  name: string
+  modelIndex: number
+  depth: number
+}
+
 interface ModelViewerProps {
   /** 플로팅 창 등에 임베드할 때 전달. 없으면 URL searchParams 사용 */
   modelId?: string | null
@@ -936,15 +1025,27 @@ interface ModelViewerProps {
   onClose?: () => void
   /** 물량 테이블과 연동: 이 층 이름과 일치하는 Storey의 부재를 하이라이트 (예: "1F", "B1F") */
   highlightByFloor?: string | null
+  /** URL보다 우선하는 설계 리비전 ID (임베드 화면용) */
+  designRevisionId?: string | null
 }
 
-export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, highlightByFloor }: ModelViewerProps = {}) {
+export default function ModelViewer({
+  modelId: modelIdProp,
+  embedded,
+  onClose,
+  highlightByFloor,
+  designRevisionId: designRevisionIdProp,
+}: ModelViewerProps = {}) {
+  const { user } = useAuth()
+  const { selectedProject } = useProject()
+  const execChrome = !embedded
   const containerRef = useRef<HTMLDivElement>(null)
   const controlsRef = useRef<{ fit: () => void } | null>(null)
   const ifcModelRef = useRef<IFCModelLike | null>(null)
   const ifcModelsRef = useRef<IFCModelLike[]>([])
   const [searchParams, setSearchParams] = useSearchParams()
-  const designRevisionId = searchParams.get('designRevisionId') || ''
+  const fromProp = designRevisionIdProp != null ? String(designRevisionIdProp).trim() : ''
+  const designRevisionId = fromProp || searchParams.get('designRevisionId') || ''
   const singleModelId = modelIdProp ?? searchParams.get('modelId')
   const modelIdsParam = searchParams.get('modelIds')
   const modelIdsList = useMemo(
@@ -966,8 +1067,7 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
   const [spatialStructure, setSpatialStructure] = useState<SpatialStructureNode | null>(null)
   const [floatInfoPos, setFloatInfoPos] = useState({ x: 960, y: 80 })
   const [infoPanelDock, setInfoPanelDock] = useState<'float' | 'left' | 'right'>('float')
-  const [infoPanelWidth, setInfoPanelWidth] = useState(320)
-  const infoPanelResizeRef = useRef<{ startX: number; startWidth: number; dock: 'float' | 'left' | 'right' } | null>(null)
+  const infoPanelWidth = 320
   const [refreshKey, setRefreshKey] = useState(0)
   const [modelList, setModelList] = useState<DesignModel[]>([])
   const [modelListLoading, setModelListLoading] = useState(false)
@@ -999,6 +1099,89 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
   const [contextMenuOpen, setContextMenuOpen] = useState(false)
   const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 })
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
+  const viewerSelectApiRef = useRef<{
+    select: (expressIdInt: number, modelIndex?: number) => void
+  } | null>(null)
+
+  const statusRef = useRef(status)
+  statusRef.current = status
+  const singleModelIdRef = useRef<string | null>(singleModelId ?? null)
+  singleModelIdRef.current = singleModelId ?? null
+  const designRevisionIdRef = useRef(designRevisionId)
+  designRevisionIdRef.current = designRevisionId
+  const projectIdRef = useRef(selectedProject?.id ?? null)
+  projectIdRef.current = selectedProject?.id ?? null
+
+  /** 다른 화면에서 보낸 층 하이라이트(설정 시 부모 `highlightByFloor`보다 우선) */
+  const linkedFloorOverrideRef = useRef<string | undefined>(undefined)
+  const [linkedFloorRev, setLinkedFloorRev] = useState(0)
+  const [pendingSyncNonce, setPendingSyncNonce] = useState(0)
+  const pendingViewerSyncRef = useRef<{ expressId?: number; globalId?: string; modelIndex?: number } | null>(null)
+
+  const [panelFilter, setPanelFilter] = useState('')
+  const [objectListScope, setObjectListScope] = useState<ObjectListScopeMode>(() =>
+    loadObjectListScope(MODELVIEWER_OBJECT_SCOPE_KEY, 'all')
+  )
+  const [bottomTab, setBottomTab] = useState<'objects' | 'quantity'>('objects')
+  const [qtyItems, setQtyItems] = useState<QuantityRevisionItem[]>([])
+  const [qtyTotal, setQtyTotal] = useState(0)
+  const [qtyLoading, setQtyLoading] = useState(false)
+  /** 물량 행 GUID → IFC에서 읽은 Qto/Tekla 등 물량 줄 */
+  const ifcQtyCacheRef = useRef<Map<string, IfcQtyCacheEntry>>(new Map())
+  const [, setIfcQtyCacheTick] = useState(0)
+  const [guidLookup, setGuidLookup] = useState(
+    () => new Map<string, { expressId: number; modelIndex: number }>()
+  )
+  const guidLookupRef = useRef(guidLookup)
+  guidLookupRef.current = guidLookup
+  const [guidIndexLoading, setGuidIndexLoading] = useState(false)
+  const [selectionPanelKey, setSelectionPanelKey] = useState('')
+
+  const objectPanelRows = useMemo((): ObjectPanelRow[] => {
+    if (!spatialStructure) return []
+    const rows: ObjectPanelRow[] = []
+    const walk = (node: SpatialStructureNode, depth: number, parentModelIndex: number) => {
+      const mi = node.modelIndex ?? parentModelIndex
+      const t = node.type || 'Unknown'
+      if (node.expressID > 0 && t !== 'MultiModel' && !t.startsWith('IFCREL')) {
+        const spatialOnly = objectListScope === 'spatial'
+        const include = !spatialOnly || isSpatialOrAssemblyIfcType(t)
+        if (include) {
+          const nm =
+            node.name ||
+            (node.Name &&
+            typeof node.Name === 'object' &&
+            node.Name !== null &&
+            'value' in (node.Name as object)
+              ? String((node.Name as { value?: string }).value || '')
+              : '')
+          rows.push({ expressID: node.expressID, type: t, name: nm, modelIndex: mi, depth })
+        }
+      }
+      for (const c of getChildNodes(node)) {
+        walk(c, depth + 1, mi)
+      }
+    }
+    walk(spatialStructure, 0, 0)
+    return rows
+  }, [spatialStructure, objectListScope])
+
+  const filteredObjectPanelRows = useMemo(() => {
+    const q = panelFilter.trim().toLowerCase()
+    if (!q) return objectPanelRows
+    return objectPanelRows.filter(
+      (r) =>
+        String(r.expressID).includes(q) ||
+        r.type.toLowerCase().includes(q) ||
+        (r.name && r.name.toLowerCase().includes(q))
+    )
+  }, [objectPanelRows, panelFilter])
+
+  /** 하단 객체 목록: 헤더·행 동일 그리드(가로 전체 사용) */
+  const objectPanelGridCols = useMemo(
+    () => (appendMode ? '56px minmax(72px,1fr) minmax(0,2.5fr) 40px' : '56px minmax(88px,1fr) minmax(0,2.5fr)'),
+    [appendMode],
+  )
 
   // 객체 정보 트리: 선택된 객체가 바뀌면 1단계만 펼친 상태로 초기화
   useEffect(() => {
@@ -1040,6 +1223,223 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
       })
       .finally(() => setModelListLoading(false))
   }, [designRevisionId])
+
+  useEffect(() => {
+    if (!designRevisionId) {
+      setQtyItems([])
+      setQtyTotal(0)
+      return
+    }
+    setQtyLoading(true)
+    getQuantityRevisionItemsApi(designRevisionId, { limit: 4000, offset: 0 })
+      .then((res) => {
+        setQtyItems(res.items ?? [])
+        setQtyTotal(res.total ?? 0)
+      })
+      .catch(() => {
+        setQtyItems([])
+        setQtyTotal(0)
+      })
+      .finally(() => setQtyLoading(false))
+  }, [designRevisionId])
+
+  useEffect(() => {
+    linkedFloorOverrideRef.current = undefined
+    pendingViewerSyncRef.current = null
+    setLinkedFloorRev((n) => n + 1)
+  }, [designRevisionId])
+
+  useEffect(() => {
+    return subscribeIfcViewerSync((msg: IfcViewerSyncPayload) => {
+      const msgRev = msg.designRevisionId.trim()
+      if (!msgRev) return
+      const viewerRev = designRevisionIdRef.current.trim()
+      if (viewerRev && viewerRev !== msgRev) return
+      if (msg.projectId && projectIdRef.current && msg.projectId !== projectIdRef.current) return
+
+      if (msg.action === 'highlightFloor') {
+        const f = msg.floor?.trim()
+        linkedFloorOverrideRef.current = f ? f : undefined
+        setLinkedFloorRev((n) => n + 1)
+        return
+      }
+
+      if (msg.action === 'selectExpress') {
+        if (msg.expressId == null || !Number.isFinite(msg.expressId)) return
+        pendingViewerSyncRef.current = { expressId: msg.expressId, modelIndex: msg.modelIndex }
+      } else if (msg.action === 'selectGlobalId') {
+        const g = msg.globalId?.trim()
+        if (!g) return
+        pendingViewerSyncRef.current = { globalId: g, modelIndex: msg.modelIndex }
+      } else {
+        return
+      }
+
+      const targetModelId = msg.designModelId?.trim() || null
+      const curId = singleModelIdRef.current?.trim() || null
+      const needsModelSwitch = Boolean(targetModelId && (!curId || targetModelId !== curId))
+      const needsRevisionInUrl = Boolean(!viewerRev && msgRev)
+
+      if (needsModelSwitch || needsRevisionInUrl) {
+        setSearchParams((prev) => {
+          const p = new URLSearchParams(prev)
+          p.set('designRevisionId', msgRev)
+          if (targetModelId) {
+            p.set('modelId', targetModelId)
+            p.delete('modelIds')
+          }
+          if (!p.get('viewer')?.toLowerCase()) p.set('viewer', 'ifc')
+          return p
+        })
+      }
+      setPendingSyncNonce((n) => n + 1)
+    })
+  }, [setSearchParams])
+
+  useEffect(() => {
+    if (status !== 'idle' || !designRevisionId || effectiveKey) return
+    const loadable = modelList.filter((m) => m.file_path)
+    if (loadable.length === 1) {
+      setSearchParams((prev) => {
+        const p = new URLSearchParams(prev)
+        p.set('designRevisionId', designRevisionId)
+        p.set('modelId', loadable[0].id)
+        p.delete('modelIds')
+        return p
+      })
+    } else if (loadable.length > 1) {
+      setPopupSelectedIds(new Set())
+      setModelSelectPopupOpen(true)
+    }
+  }, [status, designRevisionId, effectiveKey, modelList, setSearchParams])
+
+  useEffect(() => {
+    if (status !== 'ready' || objectPanelRows.length === 0) {
+      if (status !== 'ready') {
+        setGuidLookup(new Map())
+        setGuidIndexLoading(false)
+      }
+      return
+    }
+    let cancelled = false
+    setGuidIndexLoading(true)
+    const t = window.setTimeout(() => {
+      void (async () => {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()))
+        if (cancelled) return
+        const models = ifcModelsRef.current
+        if (!models.length) {
+          if (!cancelled) setGuidIndexLoading(false)
+          return
+        }
+        const map = new Map<string, { expressId: number; modelIndex: number }>()
+        const rows = objectPanelRows
+
+        async function processOne(r: ObjectPanelRow) {
+          const root = models[r.modelIndex] ?? models[0]
+          if (!root?.ifcManager || typeof root.modelID !== 'number') return
+          try {
+            const props = await root.ifcManager.getItemProperties(root.modelID, r.expressID, false)
+            if (cancelled) return
+            const gid = extractIfcGlobalId(props as Record<string, unknown>)
+            if (gid) {
+              map.set(normalizeIfcGuid(gid), { expressId: r.expressID, modelIndex: r.modelIndex })
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+
+        for (let offset = 0; offset < rows.length; offset += GUID_INDEX_BATCH) {
+          if (cancelled) return
+          const slice = rows.slice(offset, offset + GUID_INDEX_BATCH)
+          for (let j = 0; j < slice.length; j += GUID_INDEX_INNER_CONCURRENCY) {
+            if (cancelled) return
+            const part = slice.slice(j, j + GUID_INDEX_INNER_CONCURRENCY)
+            await Promise.all(part.map((r) => processOne(r)))
+          }
+          await new Promise<void>((r) => requestAnimationFrame(() => r()))
+        }
+
+        if (!cancelled) {
+          ifcQtyCacheRef.current = new Map()
+          setGuidLookup(map)
+          setGuidIndexLoading(false)
+        }
+      })()
+    }, 80)
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
+    }
+  }, [status, objectPanelRows])
+
+  /** 물량 탭: GUID로 모델 요소를 찾을 수 있으면 IFC 속성에서 물량(Qto 등) 비동기 적재 */
+  useEffect(() => {
+    if (bottomTab !== 'quantity' || status !== 'ready' || qtyItems.length === 0) return
+    let cancelled = false
+
+    const run = async () => {
+      const models = ifcModelsRef.current
+      if (!models.length || guidLookup.size === 0) return
+
+      type Job = { ng: string; modelIndex: number; expressId: number }
+      const jobs: Job[] = []
+      const jobSeen = new Set<string>()
+      for (const item of qtyItems) {
+        const g = item.guid?.trim()
+        if (!g) continue
+        const ng = normalizeIfcGuid(g)
+        if (jobSeen.has(ng)) continue
+        const hit = guidLookup.get(ng)
+        if (!hit) continue
+        const prev = ifcQtyCacheRef.current.get(ng)
+        if (prev && (prev.status === 'ok' || prev.status === 'empty' || prev.status === 'error')) continue
+        if (prev?.status === 'loading') continue
+        jobSeen.add(ng)
+        jobs.push({ ng, modelIndex: hit.modelIndex, expressId: hit.expressId })
+      }
+      if (jobs.length === 0) return
+
+      const CONCURRENCY = 5
+      let idx = 0
+      let completed = 0
+
+      async function worker() {
+        while (!cancelled && idx < jobs.length) {
+          const my = idx++
+          const job = jobs[my]
+          if (!job) break
+          ifcQtyCacheRef.current.set(job.ng, { status: 'loading', lines: [] })
+          setIfcQtyCacheTick((n) => n + 1)
+          try {
+            const props = await getIfcItemPropertiesForViewer(models, job.modelIndex, job.expressId, true)
+            if (cancelled) return
+            const lines = extractIfcQuantityLines(props)
+            ifcQtyCacheRef.current.set(job.ng, {
+              status: lines.length ? 'ok' : 'empty',
+              lines,
+            })
+          } catch {
+            if (!cancelled) ifcQtyCacheRef.current.set(job.ng, { status: 'error', lines: [] })
+          }
+          completed += 1
+          if (completed % 10 === 0) setIfcQtyCacheTick((n) => n + 1)
+        }
+      }
+
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, jobs.length) }, () => worker()))
+      if (!cancelled) setIfcQtyCacheTick((n) => n + 1)
+    }
+
+    const t = window.setTimeout(() => {
+      void run()
+    }, 0)
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
+    }
+  }, [bottomTab, status, qtyItems, guidLookup])
 
   useEffect(() => {
     if (!effectiveKey) {
@@ -1129,6 +1529,20 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
       sphericalToVector3(radius, phi, theta, camera.position)
       camera.position.add(target)
       camera.lookAt(target)
+    }
+
+    /** 프로그램적 선택 시 부재 바운딩에 맞춰 타깃·거리(확대) 조정 */
+    const fitCameraToExpressId = (root: IFCModelLike, expressIdInt: number): boolean => {
+      const box = getExpressIdBoundingBox(root, expressIdInt)
+      if (!box) return false
+      const center = box.getCenter(new THREE.Vector3())
+      const size = box.getSize(new THREE.Vector3())
+      const maxD = Math.max(size.x, size.y, size.z, 0.15)
+      target.copy(center)
+      const halfFov = (camera.fov * Math.PI) / 180 / 2
+      radius = Math.max(minRadius, Math.min(maxRadius, (maxD / 2 / Math.sin(halfFov)) * 1.25))
+      applyCameraPosition()
+      return true
     }
 
     let isOrbit = false
@@ -1379,6 +1793,7 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
       applySelectionHighlight()
       setSelectedInfo(null)
       setSelectedCount(0)
+      setSelectionPanelKey('')
     }
 
     /** 숨김 취소: 모든 숨긴 객체 복원 */
@@ -1403,6 +1818,7 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
           applySelectionHighlight()
           setSelectedInfo(null)
           setSelectedCount(0)
+          setSelectionPanelKey('')
           target.set(0, 0, 0)
           applyCameraPosition()
         }
@@ -1431,25 +1847,31 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
       const list = clickSelectionRef.current
       setSelectedCount(list.length)
       if (list.length === 1) {
-        const c = getBoundingBoxCenterForExpressId(list[0].root, list[0].expressIdInt)
-        if (c) {
-          target.copy(c)
-          applyCameraPosition()
+        if (!fitCameraToExpressId(list[0].root, list[0].expressIdInt)) {
+          const c = getBoundingBoxCenterForExpressId(list[0].root, list[0].expressIdInt)
+          if (c) {
+            target.copy(c)
+            applyCameraPosition()
+          }
         }
       } else if (list.length > 1) {
         const box = new THREE.Box3()
         let hasAny = false
         for (const { root: r, expressIdInt: id } of list) {
-          const c = getBoundingBoxCenterForExpressId(r, id)
-          if (c) {
-            box.expandByPoint(c)
+          const b = getExpressIdBoundingBox(r, id)
+          if (b) {
+            box.union(b)
             hasAny = true
           }
         }
         if (hasAny) {
           const center = new THREE.Vector3()
           box.getCenter(center)
+          const size = box.getSize(new THREE.Vector3())
+          const maxD = Math.max(size.x, size.y, size.z, 0.15)
           target.copy(center)
+          const halfFov = (camera.fov * Math.PI) / 180 / 2
+          radius = Math.max(minRadius, Math.min(maxRadius, (maxD / 2 / Math.sin(halfFov)) * 1.25))
           applyCameraPosition()
         }
       }
@@ -1471,7 +1893,52 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
       } else {
         setSelectedInfo({ expressID: first.expressIdInt })
       }
+      const mi = ifcModelsRef.current.indexOf(first.root)
+      setSelectionPanelKey(`${mi >= 0 ? mi : 0}-${first.expressIdInt}`)
     }
+
+    const selectByExpressId = (expressIdInt: number, modelIndex = 0) => {
+      const models = ifcModelsRef.current
+      const root = models[modelIndex] ?? models[0]
+      if (!root) return
+      if (!highlightMaterialRef.current) {
+        highlightMaterialRef.current = new THREE.MeshBasicMaterial({
+          color: 0xff9800,
+          transparent: true,
+          opacity: 0.82,
+          depthTest: true,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        })
+      }
+      clickSelectionRef.current = [{ root, expressIdInt }]
+      applySelectionHighlight()
+      setSelectedCount(1)
+      setSelectionPanelKey(`${modelIndex}-${expressIdInt}`)
+      if (!fitCameraToExpressId(root, expressIdInt)) {
+        const c = getBoundingBoxCenterForExpressId(root, expressIdInt)
+        if (c) {
+          target.copy(c)
+          applyCameraPosition()
+        }
+      }
+      const mid = typeof root.modelID === 'number' ? root.modelID : 0
+      if (root.ifcManager != null && typeof mid === 'number') {
+        root.ifcManager
+          .getItemProperties(mid, expressIdInt, true)
+          .then((p) => setSelectedInfo(p ?? null))
+          .catch(() => setSelectedInfo({ expressID: expressIdInt }))
+      } else if (root.getItemProperties) {
+        root
+          .getItemProperties(expressIdInt, true)
+          .then((p) => setSelectedInfo(p ?? null))
+          .catch(() => setSelectedInfo({ expressID: expressIdInt }))
+      } else {
+        setSelectedInfo({ expressID: expressIdInt })
+      }
+    }
+
+    viewerSelectApiRef.current = { select: selectByExpressId }
 
     /** 시프트+드래그 영역 안의 부재들로 선택 설정 */
     const runMarqueeSelection = (
@@ -1496,31 +1963,38 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
       }
       applySelectionHighlight()
       if (list.length === 1) {
-        const c = getBoundingBoxCenterForExpressId(list[0].root, list[0].expressIdInt)
-        if (c) {
-          target.copy(c)
-          applyCameraPosition()
+        if (!fitCameraToExpressId(list[0].root, list[0].expressIdInt)) {
+          const c = getBoundingBoxCenterForExpressId(list[0].root, list[0].expressIdInt)
+          if (c) {
+            target.copy(c)
+            applyCameraPosition()
+          }
         }
       } else if (list.length > 1) {
         const box = new THREE.Box3()
         let hasAny = false
         for (const { root: r, expressIdInt: id } of list) {
-          const c = getBoundingBoxCenterForExpressId(r, id)
-          if (c) {
-            box.expandByPoint(c)
+          const b = getExpressIdBoundingBox(r, id)
+          if (b) {
+            box.union(b)
             hasAny = true
           }
         }
         if (hasAny) {
           const center = new THREE.Vector3()
           box.getCenter(center)
+          const size = box.getSize(new THREE.Vector3())
+          const maxD = Math.max(size.x, size.y, size.z, 0.15)
           target.copy(center)
+          const halfFov = (camera.fov * Math.PI) / 180 / 2
+          radius = Math.max(minRadius, Math.min(maxRadius, (maxD / 2 / Math.sin(halfFov)) * 1.25))
           applyCameraPosition()
         }
       }
       if (list.length === 0) {
         setSelectedInfo(null)
         setSelectedCount(0)
+        setSelectionPanelKey('')
       } else {
         const first = list[0]
         const modelID = typeof first.root.modelID === 'number' ? first.root.modelID : 0
@@ -1537,6 +2011,8 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
         } else {
           setSelectedInfo({ expressID: first.expressIdInt })
         }
+        const mi = ifcModelsRef.current.indexOf(first.root)
+        setSelectionPanelKey(`${mi >= 0 ? mi : 0}-${first.expressIdInt}`)
       }
     }
 
@@ -1965,6 +2441,7 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
     if (container) resizeObs.observe(container)
 
     return () => {
+      viewerSelectApiRef.current = null
       pendingModelIdRef.current = null
       pendingLoadKeyRef.current = null
       spatialLoadGenRef.current += 1
@@ -2023,7 +2500,9 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
     } catch {
       /* ignore */
     }
-    const floorTrim = highlightByFloor != null ? String(highlightByFloor).trim() : ''
+    const floorRaw =
+      linkedFloorOverrideRef.current !== undefined ? linkedFloorOverrideRef.current : highlightByFloor
+    const floorTrim = floorRaw != null ? String(floorRaw).trim() : ''
     if (floorTrim) {
       const storeyNode = findStoreyNodeByFloor(spatialStructure, floorTrim)
       if (storeyNode) {
@@ -2044,7 +2523,46 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
         }
       }
     }
-  }, [status, spatialStructure, highlightByFloor])
+  }, [status, spatialStructure, highlightByFloor, linkedFloorRev])
+
+  useEffect(() => {
+    if (status !== 'ready') return
+    const pending = pendingViewerSyncRef.current
+    if (!pending) return
+
+    const tryOne = (): boolean => {
+      const api = viewerSelectApiRef.current
+      if (!api) return false
+      if (pending.expressId != null && Number.isFinite(pending.expressId)) {
+        api.select(pending.expressId, pending.modelIndex ?? 0)
+        pendingViewerSyncRef.current = null
+        setBottomTab('objects')
+        return true
+      }
+      if (pending.globalId) {
+        const hit = guidLookupRef.current.get(normalizeIfcGuid(pending.globalId))
+        if (hit) {
+          api.select(hit.expressId, hit.modelIndex)
+          pendingViewerSyncRef.current = null
+          setBottomTab('objects')
+          return true
+        }
+      }
+      return false
+    }
+
+    if (tryOne()) return
+
+    let n = 0
+    const id = window.setInterval(() => {
+      n += 1
+      if (tryOne() || n >= 40) {
+        if (n >= 40) pendingViewerSyncRef.current = null
+        window.clearInterval(id)
+      }
+    }, 160)
+    return () => window.clearInterval(id)
+  }, [status, guidLookup, pendingSyncNonce])
 
   const INFO_PANEL_MIN_WIDTH = 240
   const INFO_PANEL_MAX_WIDTH = 600
@@ -2063,26 +2581,6 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
     }
     const onUp = () => {
       floatDragRef.current = null
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-  }
-
-  const startInfoPanelResize = (e: React.MouseEvent) => {
-    if (e.button !== 0) return
-    e.preventDefault()
-    infoPanelResizeRef.current = { startX: e.clientX, startWidth: infoPanelWidth, dock: infoPanelDock }
-    const onMove = (ev: MouseEvent) => {
-      const r = infoPanelResizeRef.current
-      if (!r) return
-      const dx = ev.clientX - r.startX
-      const delta = r.dock === 'right' || r.dock === 'float' ? -dx : dx
-      setInfoPanelWidth((w) => Math.min(INFO_PANEL_MAX_WIDTH, Math.max(INFO_PANEL_MIN_WIDTH, w + delta)))
-    }
-    const onUp = () => {
-      infoPanelResizeRef.current = null
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
@@ -2184,10 +2682,18 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
     gap: 6,
     alignItems: 'center',
     padding: '6px 10px',
-    background: 'rgba(45, 45, 45, 0.95)',
-    borderRadius: 8,
-    border: '1px solid #404040',
-    boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
+    borderRadius: 10,
+    ...(execChrome
+      ? {
+          background: 'rgba(255, 255, 255, 0.96)',
+          border: '1px solid #e2e8f0',
+          boxShadow: '0 8px 30px rgba(15, 23, 42, 0.1)',
+        }
+      : {
+          background: 'rgba(45, 45, 45, 0.95)',
+          border: '1px solid #404040',
+          boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
+        }),
   }
   const viewerBtnStyle: CSSProperties = {
     display: 'inline-flex',
@@ -2195,18 +2701,34 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
     justifyContent: 'center',
     gap: 4,
     padding: '6px 10px',
-    background: '#3d3d3d',
-    border: '1px solid #505050',
-    borderRadius: 6,
-    color: '#e0e0e0',
+    borderRadius: 8,
     cursor: 'pointer',
     fontSize: 13,
+    ...(execChrome
+      ? {
+          background: '#f8fafc',
+          border: '1px solid #e2e8f0',
+          color: '#334155',
+        }
+      : {
+          background: '#3d3d3d',
+          border: '1px solid #505050',
+          color: '#e0e0e0',
+        }),
   }
   const viewerBtnPrimaryStyle: CSSProperties = {
     ...viewerBtnStyle,
-    background: '#0d7377',
-    borderColor: '#0d7377',
-    color: '#fff',
+    ...(execChrome
+      ? {
+          background: '#0f172a',
+          borderColor: '#0f172a',
+          color: '#fff',
+        }
+      : {
+          background: '#0d7377',
+          borderColor: '#0d7377',
+          color: '#fff',
+        }),
   }
 
   const loadableModelsInToolbar = modelList.filter((m) => m.file_path)
@@ -2219,8 +2741,80 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
     })
   }
 
+  const handlePanelRowClick = (row: ObjectPanelRow) => {
+    viewerSelectApiRef.current?.select(row.expressID, row.modelIndex)
+  }
+
+  const handleQuantityRowClick = (item: QuantityRevisionItem) => {
+    const g = item.guid?.trim()
+    if (!g) return
+    const ng = normalizeIfcGuid(g)
+    const hit = guidLookup.get(ng) ?? guidLookupRef.current.get(ng)
+    if (hit) {
+      viewerSelectApiRef.current?.select(hit.expressId, hit.modelIndex)
+      setBottomTab('objects')
+      return
+    }
+    pendingViewerSyncRef.current = { globalId: g }
+    setPendingSyncNonce((n) => n + 1)
+    const rev = effectiveDesignRevisionIdForSync(designRevisionId)
+    if (rev) {
+      postIfcViewerSync({
+        v: 1,
+        action: 'selectGlobalId',
+        designRevisionId: rev,
+        projectId: selectedProject?.id,
+        globalId: g,
+      })
+    }
+  }
+
+  const viewerSelectStyle: CSSProperties = {
+    padding: '6px 8px',
+    borderRadius: 8,
+    fontSize: 13,
+    cursor: 'pointer',
+    minWidth: 140,
+    ...(execChrome
+      ? { background: '#fff', border: '1px solid #e2e8f0', color: '#0f172a' }
+      : { background: '#3d3d3d', border: '1px solid #505050', color: '#e0e0e0' }),
+  }
+
   return (
-    <div style={{ width: '100%', height: embedded ? '100%' : '100vh', minHeight: 0, background: '#1e1e1e', position: 'relative' }} className="model-viewer--trimble-style">
+    <div
+      style={{
+        width: '100%',
+        height: embedded ? '100%' : '100vh',
+        minHeight: 0,
+        position: 'relative',
+        display: 'flex',
+        flexDirection: 'column',
+        ...(execChrome ? { background: 'transparent' } : { background: '#1e1e1e' }),
+      }}
+      className={`model-viewer--trimble-style${execChrome ? ' model-viewer-exec' : ''}`}
+    >
+      {execChrome && (
+        <header className="model-viewer-exec__pagebar">
+          <div>
+            <h1 className="model-viewer-exec__title">IFC 모델 뷰어</h1>
+            <p className="model-viewer-exec__subtitle">리비전에 등록된 모델을 탐색·선택합니다.</p>
+          </div>
+          <div className="model-viewer-exec__user">
+            <div className="model-viewer-exec__user-text">
+              <span className="model-viewer-exec__user-name">{(user?.name || user?.email || '사용자').trim()}</span>
+              {user?.role ? <span className="model-viewer-exec__user-role">{user.role}</span> : null}
+            </div>
+            <div className="model-viewer-exec__avatar" aria-hidden>
+              {(user?.name || user?.email || 'U').trim().charAt(0).toUpperCase()}
+            </div>
+          </div>
+        </header>
+      )}
+      <div
+        className={execChrome ? 'model-viewer-exec__shell' : undefined}
+        style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', width: '100%', minWidth: 0 }}
+      >
+      <div style={{ flex: 1, minHeight: 0, position: 'relative', width: '100%' }}>
       <div style={viewerToolbarStyle}>
         {embedded && onClose && (
           <button type="button" onClick={onClose} style={viewerBtnStyle} title="닫기" aria-label="닫기">
@@ -2250,16 +2844,7 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
             value={modelId ?? ''}
             onChange={(e) => { const v = e.target.value; if (v) handleSwitchModel(v) }}
             title="다른 모델로 전환"
-            style={{
-              padding: '6px 8px',
-              background: '#3d3d3d',
-              border: '1px solid #505050',
-              borderRadius: 6,
-              color: '#e0e0e0',
-              fontSize: 13,
-              cursor: 'pointer',
-              minWidth: 140,
-            }}
+            style={viewerSelectStyle}
             aria-label="모델 선택"
           >
             <option value="">모델 선택</option>
@@ -2314,16 +2899,46 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
           </svg>
           <span>숨기기 취소</span>
         </button>
-        <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 4 }}>
+        <span style={{ fontSize: 11, marginLeft: 4, color: execChrome ? '#64748b' : '#6b7280' }}>
           Orbit: 좌클릭 · Pan: 휠버튼 드래그 · 줌: 휠 · 선택: 클릭 / Ctrl+클릭 추가 / Shift+드래그 · 우클릭: 메뉴
         </span>
       </div>
       <div
         ref={containerRef}
-        style={{ position: 'relative', width: '100%', height: '100%', pointerEvents: 'auto' }}
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          top: 0,
+          bottom: 0,
+          pointerEvents: 'auto',
+        }}
         aria-busy={status === 'loading'}
         aria-label="IFC 모델 뷰어"
       />
+      {status === 'idle' && !effectiveKey && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(30,30,30,0.88)',
+            zIndex: 6,
+            flexDirection: 'column',
+            gap: 12,
+            padding: 24,
+            textAlign: 'center',
+          }}
+        >
+          <p style={{ color: '#e5e7eb', margin: 0, maxWidth: 420, fontSize: 14, lineHeight: 1.5 }}>
+            {designRevisionId
+              ? '이 리비전에서 불러올 모델을 선택하세요. 상단 「모델 열기」를 누르거나 모델 드롭다운에서 선택할 수 있습니다.'
+              : '메인 화면에서 프로젝트·설계 차수·리비전을 선택한 뒤 모델 뷰어를 여세요. 새 창 주소에 designRevisionId가 포함됩니다. Trimble Connect 임베드만 쓰려면 ?viewer=trimble 을 붙이세요.'}
+          </p>
+        </div>
+      )}
       {contextMenuOpen && (
         <div
           ref={contextMenuRef}
@@ -2460,7 +3075,7 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
             <div className="modal__body" style={{ overflow: 'auto', flex: 1, minHeight: 0 }}>
               {!designRevisionId ? (
                 <p style={{ margin: 0, color: '#64748b', fontSize: '0.875rem' }}>
-                  리비전 정보가 없습니다. 메인 창에서 <strong>설계 차수·리비전</strong>을 선택한 뒤 상단 <strong>모델뷰어</strong> 버튼으로 뷰어를 열면 이 리비전의 모델 목록을 선택할 수 있습니다.
+                  리비전 정보가 없습니다. 메인 창에서 <strong>설계 차수·리비전</strong>을 선택한 뒤 왼쪽 메뉴 <strong>모델 뷰어</strong>로 뷰어를 열면 이 리비전의 모델 목록을 선택할 수 있습니다.
                 </p>
               ) : modelListLoading ? (
                 <p style={{ margin: 0, color: '#64748b' }}>모델 목록 불러오는 중…</p>
@@ -2538,57 +3153,6 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
                 : { position: 'absolute' as const, zIndex: 1000, right: 0, top: 0, bottom: 0, width: infoPanelWidth, minWidth: INFO_PANEL_MIN_WIDTH, maxWidth: INFO_PANEL_MAX_WIDTH, borderRadius: '8px 0 0 8px', background: floatPanelStyle.background, backdropFilter: floatPanelStyle.backdropFilter, boxShadow: floatPanelStyle.boxShadow, border: floatPanelStyle.border, overflow: 'hidden', display: 'flex', flexDirection: 'column' as const }),
           }}
         >
-          {infoPanelDock === 'right' && (
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              onMouseDown={startInfoPanelResize}
-              style={{
-                position: 'absolute',
-                left: 0,
-                top: 0,
-                bottom: 0,
-                width: 8,
-                cursor: 'ew-resize',
-                zIndex: 1,
-              }}
-              title="너비 조절"
-            />
-          )}
-          {infoPanelDock === 'left' && (
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              onMouseDown={startInfoPanelResize}
-              style={{
-                position: 'absolute',
-                right: 0,
-                top: 0,
-                bottom: 0,
-                width: 8,
-                cursor: 'ew-resize',
-                zIndex: 1,
-              }}
-              title="너비 조절"
-            />
-          )}
-          {infoPanelDock === 'float' && (
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              onMouseDown={startInfoPanelResize}
-              style={{
-                position: 'absolute',
-                left: 0,
-                top: 0,
-                bottom: 0,
-                width: 8,
-                cursor: 'ew-resize',
-                zIndex: 1,
-              }}
-              title="너비 조절"
-            />
-          )}
           <div
             role="button"
             tabIndex={0}
@@ -2691,16 +3255,17 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
         <div
           aria-live="polite"
           style={{
-            position: 'fixed',
+            position: 'absolute',
             left: 12,
             bottom: 12,
             padding: '6px 12px',
-            background: 'rgba(45, 45, 45, 0.9)',
-            border: '1px solid rgba(64, 64, 64, 0.8)',
-            borderRadius: 6,
+            background: execChrome ? 'rgba(255,255,255,0.95)' : 'rgba(45, 45, 45, 0.9)',
+            border: execChrome ? '1px solid #e2e8f0' : '1px solid rgba(64, 64, 64, 0.8)',
+            borderRadius: 10,
             fontSize: 13,
-            color: '#e0e0e0',
+            color: execChrome ? '#334155' : '#e0e0e0',
             zIndex: 500,
+            boxShadow: execChrome ? '0 4px 16px rgba(15,23,42,0.08)' : undefined,
           }}
         >
           레이 교차 객체: {rayHitCount}개
@@ -2712,21 +3277,358 @@ export default function ModelViewer({ modelId: modelIdProp, embedded, onClose, h
         <div
           aria-live="polite"
           style={{
-            position: 'fixed',
+            position: 'absolute',
             right: 12,
             bottom: 12,
             padding: '6px 12px',
-            background: 'rgba(45, 45, 45, 0.9)',
-            border: '1px solid rgba(64, 64, 64, 0.8)',
-            borderRadius: 6,
+            background: execChrome ? 'rgba(255,255,255,0.95)' : 'rgba(45, 45, 45, 0.9)',
+            border: execChrome ? '1px solid #e2e8f0' : '1px solid rgba(64, 64, 64, 0.8)',
+            borderRadius: 10,
             fontSize: 13,
-            color: '#e0e0e0',
+            color: execChrome ? '#334155' : '#e0e0e0',
             zIndex: 500,
+            boxShadow: execChrome ? '0 4px 16px rgba(15,23,42,0.08)' : undefined,
           }}
         >
           선택된 객체: {selectedCount}개
         </div>
       )}
+      </div>
+
+      {status === 'ready' && (
+        <div
+          role="region"
+          aria-label="객체 및 물량 목록"
+          className={execChrome ? 'model-viewer-exec__bottom' : undefined}
+          style={{
+            height: BOTTOM_PANEL_H,
+            flexShrink: 0,
+            borderTop: execChrome ? '1px solid #e5e7eb' : '1px solid #404040',
+            background: execChrome ? '#fafbfc' : '#252526',
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 0,
+          }}
+        >
+          <div
+            className="model-viewer-exec__bottom-tabs"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '6px 10px',
+              borderBottom: execChrome ? '1px solid #e2e8f0' : '1px solid #3d3d3d',
+              flexShrink: 0,
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setBottomTab('objects')}
+              style={{
+                padding: '4px 12px',
+                borderRadius: 8,
+                border: execChrome ? '1px solid transparent' : 'none',
+                cursor: 'pointer',
+                fontSize: 12,
+                fontWeight: 600,
+                background: bottomTab === 'objects' ? (execChrome ? '#0f172a' : '#0d7377') : execChrome ? '#fff' : '#3d3d3d',
+                color: '#fff',
+                ...(execChrome && bottomTab !== 'objects' ? { color: '#334155', borderColor: '#e2e8f0' } : {}),
+              }}
+            >
+              객체 목록 ({filteredObjectPanelRows.length}
+              {objectPanelRows.length !== filteredObjectPanelRows.length ? ` / ${objectPanelRows.length}` : ''})
+            </button>
+            <button
+              type="button"
+              onClick={() => setBottomTab('quantity')}
+              style={{
+                padding: '4px 12px',
+                borderRadius: 8,
+                border: execChrome ? '1px solid transparent' : 'none',
+                cursor: 'pointer',
+                fontSize: 12,
+                fontWeight: 600,
+                background: bottomTab === 'quantity' ? (execChrome ? '#0f172a' : '#0d7377') : execChrome ? '#fff' : '#3d3d3d',
+                color: '#fff',
+                ...(execChrome && bottomTab !== 'quantity' ? { color: '#334155', borderColor: '#e2e8f0' } : {}),
+              }}
+            >
+              물량 ({qtyTotal || qtyItems.length})
+            </button>
+            {bottomTab === 'objects' && (
+              <>
+                <label
+                  style={{
+                    marginLeft: 'auto',
+                    fontSize: 11,
+                    color: execChrome ? '#64748b' : '#d1d5db',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    whiteSpace: 'nowrap',
+                    userSelect: 'none',
+                  }}
+                  title="층·공간·어셈블리 등만 목록·GUID 색인(물량 연동) 대상으로 줄여 로딩이 빨라집니다."
+                >
+                  <input
+                    type="checkbox"
+                    checked={objectListScope === 'spatial'}
+                    onChange={(e) => {
+                      const m: ObjectListScopeMode = e.target.checked ? 'spatial' : 'all'
+                      setObjectListScope(m)
+                      saveObjectListScope(MODELVIEWER_OBJECT_SCOPE_KEY, m)
+                    }}
+                  />
+                  공간·어셈블리만
+                </label>
+                <input
+                  type="search"
+                  value={panelFilter}
+                  onChange={(e) => setPanelFilter(e.target.value)}
+                  placeholder="ExpressID·유형·이름 검색…"
+                  style={{
+                    maxWidth: 220,
+                    padding: '4px 8px',
+                    borderRadius: 8,
+                    border: execChrome ? '1px solid #e2e8f0' : '1px solid #505050',
+                    background: execChrome ? '#fff' : '#1e1e1e',
+                    color: execChrome ? '#0f172a' : '#e0e0e0',
+                    fontSize: 12,
+                  }}
+                />
+              </>
+            )}
+            {guidIndexLoading && (
+              <span style={{ fontSize: 11, color: '#9ca3af' }}>GUID 매칭 색인 중…</span>
+            )}
+          </div>
+          <div
+            className={execChrome ? 'model-viewer-exec__bottom-scroll' : undefined}
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: bottomTab === 'objects' ? 'hidden' : 'auto',
+              display: bottomTab === 'objects' ? 'flex' : undefined,
+              flexDirection: bottomTab === 'objects' ? 'column' : undefined,
+            }}
+          >
+            {bottomTab === 'objects' && (
+              <div className="model-viewer-object-panel">
+                <div
+                  role="row"
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: objectPanelGridCols,
+                    flexShrink: 0,
+                    position: 'sticky',
+                    top: 0,
+                    zIndex: 2,
+                    background: execChrome ? '#f1f5f9' : '#2d2d2d',
+                    borderBottom: execChrome ? '1px solid #e2e8f0' : '1px solid #404040',
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: execChrome ? '#475569' : '#e5e7eb',
+                  }}
+                >
+                  <div style={{ textAlign: 'left', padding: '4px 8px' }}>ExpressID</div>
+                  <div style={{ textAlign: 'left', padding: '4px 8px' }}>유형</div>
+                  <div style={{ textAlign: 'left', padding: '4px 8px' }}>이름</div>
+                  {appendMode && <div style={{ textAlign: 'left', padding: '4px 8px' }}>모델#</div>}
+                </div>
+                {filteredObjectPanelRows.length === 0 ? (
+                  <p style={{ margin: 10, fontSize: 12, color: '#9ca3af', flex: 1 }}>
+                    {objectPanelRows.length === 0
+                      ? '공간 구조에서 표시할 객체가 없습니다. 모델을 불러오면 목록이 채워집니다.'
+                      : '검색 조건에 맞는 객체가 없습니다.'}
+                  </p>
+                ) : (
+                  <VirtualList
+                    className="model-viewer-object-vlist"
+                    items={filteredObjectPanelRows}
+                    rowHeight={OBJECT_PANEL_ROW_HEIGHT}
+                    overscan={14}
+                    scrollResetKey={`${objectListScope}|${panelFilter}|${filteredObjectPanelRows.length}`}
+                    getKey={(row) => `${row.modelIndex}-${row.expressID}`}
+                    renderRow={(row) => {
+                      const rowKey = `${row.modelIndex}-${row.expressID}`
+                      const active = selectionPanelKey === rowKey
+                      const borderBottom = execChrome ? '1px solid #f1f5f9' : '1px solid #333'
+                      return (
+                        <div
+                          role="row"
+                          onClick={() => handlePanelRowClick(row)}
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: objectPanelGridCols,
+                            alignItems: 'center',
+                            width: '100%',
+                            height: '100%',
+                            minHeight: OBJECT_PANEL_ROW_HEIGHT,
+                            boxSizing: 'border-box',
+                            cursor: 'pointer',
+                            background: active ? 'rgba(13, 115, 119, 0.45)' : undefined,
+                            borderBottom,
+                            fontSize: 11,
+                            color: execChrome ? '#334155' : '#e0e0e0',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (!active) e.currentTarget.style.background = execChrome ? '#f8fafc' : 'rgba(255,255,255,0.06)'
+                          }}
+                          onMouseLeave={(e) => {
+                            if (!active) e.currentTarget.style.background = active ? 'rgba(13, 115, 119, 0.45)' : ''
+                          }}
+                        >
+                          <div style={{ padding: '2px 8px', paddingLeft: 8 + row.depth * 10 }}>{row.expressID}</div>
+                          <div style={{ padding: '2px 8px', color: '#93c5fd', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {row.type}
+                          </div>
+                          <div
+                            style={{ padding: '2px 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                            title={row.name || undefined}
+                          >
+                            {row.name || '—'}
+                          </div>
+                          {appendMode && <div style={{ padding: '2px 8px' }}>{row.modelIndex}</div>}
+                        </div>
+                      )
+                    }}
+                  />
+                )}
+              </div>
+            )}
+            {bottomTab === 'quantity' && (
+              <>
+                {qtyLoading ? (
+                  <p style={{ margin: 12, color: '#9ca3af', fontSize: 12 }}>물량 행을 불러오는 중…</p>
+                ) : qtyItems.length === 0 ? (
+                  <p style={{ margin: 12, color: '#9ca3af', fontSize: 12 }}>
+                    이 리비전에 등록된 물량 행이 없습니다. GUID가 있으면 클릭 시 모델에서 동일 GUID 객체를 선택합니다.
+                  </p>
+                ) : (
+                  <>
+                    <p style={{ margin: '6px 10px 4px', color: execChrome ? '#64748b' : '#9ca3af', fontSize: 10, lineHeight: 1.35 }}>
+                      GUID가 열린 IFC와 매칭되면 <strong style={{ color: execChrome ? '#0f172a' : '#cbd5e1' }}>Qto / Tekla Quantity</strong> 등 IFC 물량·치수 속성을
+                      읽어 표시합니다. 셀에 마우스를 올리면 전체 항목을 볼 수 있습니다.
+                    </p>
+                    <table
+                      style={{
+                        width: '100%',
+                        borderCollapse: 'collapse',
+                        fontSize: 11,
+                        color: execChrome ? '#334155' : '#e0e0e0',
+                      }}
+                    >
+                      <thead>
+                        <tr style={{ background: '#2d2d2d', position: 'sticky', top: 0, zIndex: 1 }}>
+                          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid #404040' }}>파일</th>
+                          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid #404040' }}>동</th>
+                          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid #404040' }}>층</th>
+                          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid #404040' }}>명칭</th>
+                          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid #404040' }}>규격</th>
+                          <th style={{ textAlign: 'right', padding: '4px 8px', borderBottom: '1px solid #404040' }}>값</th>
+                          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid #404040', maxWidth: 200 }}>
+                            IFC 물량
+                          </th>
+                          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid #404040' }}>GUID</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {qtyItems.map((item) => {
+                          const g = item.guid?.trim()
+                          const ng = g ? normalizeIfcGuid(g) : ''
+                          const canLink = !!(g && (guidLookup.has(ng) || guidLookupRef.current.has(ng)))
+                          const qEnt = g && canLink ? ifcQtyCacheRef.current.get(ng) : undefined
+                          let ifcQtyCell = '—'
+                          let ifcQtyTitle = ''
+                          if (g && canLink) {
+                            if (!qEnt || qEnt.status === 'loading') {
+                              ifcQtyCell = '…'
+                              ifcQtyTitle = 'IFC 물량 속성을 읽는 중…'
+                            } else if (qEnt.status === 'ok') {
+                              ifcQtyCell = formatIfcQuantitySummary(qEnt.lines) || '—'
+                              ifcQtyTitle = formatIfcQuantityTooltip(qEnt.lines)
+                            } else if (qEnt.status === 'empty') {
+                              ifcQtyCell = '—'
+                              ifcQtyTitle = '이 요소에 Qto/Tekla 등 물량 속성이 없거나 인식되지 않았습니다.'
+                            } else {
+                              ifcQtyCell = '!'
+                              ifcQtyTitle = 'IFC 속성을 읽지 못했습니다.'
+                            }
+                          } else if (g) {
+                            ifcQtyTitle = '모델에서 이 GUID에 해당하는 요소를 찾지 못했습니다.'
+                          }
+                          return (
+                            <tr
+                              key={`${item.quantity_file_id}-${item.id}`}
+                              onClick={() => handleQuantityRowClick(item)}
+                              title={
+                                canLink
+                                  ? '클릭하여 모델에서 선택·확대'
+                                  : g
+                                    ? '클릭 시 GUID로 재시도(색인 로딩 중일 수 있음). 다른 탭 Trimble 뷰어도 동기화됩니다.'
+                                    : 'GUID 없음'
+                              }
+                              style={{
+                                cursor: g ? 'pointer' : 'default',
+                                opacity: 1,
+                              }}
+                              onMouseEnter={(e) => {
+                                if (canLink) e.currentTarget.style.background = execChrome ? '#f1f5f9' : 'rgba(255,255,255,0.06)'
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.background = ''
+                              }}
+                            >
+                              <td
+                                style={{
+                                  padding: '3px 8px',
+                                  borderBottom: execChrome ? '1px solid #f1f5f9' : '1px solid #333',
+                                  maxWidth: 120,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                }}
+                              >
+                                {item.file_title || '—'}
+                              </td>
+                              <td style={{ padding: '3px 8px', borderBottom: '1px solid #333' }}>{item.dong ?? '—'}</td>
+                              <td style={{ padding: '3px 8px', borderBottom: '1px solid #333' }}>{item.floor ?? '—'}</td>
+                              <td style={{ padding: '3px 8px', borderBottom: '1px solid #333' }}>{item.name ?? '—'}</td>
+                              <td style={{ padding: '3px 8px', borderBottom: '1px solid #333' }}>{item.spec ?? '—'}</td>
+                              <td style={{ padding: '3px 8px', borderBottom: '1px solid #333', textAlign: 'right' }}>
+                                {item.result_value ?? '—'}
+                              </td>
+                              <td
+                                style={{
+                                  padding: '3px 8px',
+                                  borderBottom: '1px solid #333',
+                                  maxWidth: 200,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                  fontSize: 10,
+                                  color: qEnt?.status === 'ok' ? '#a7f3d0' : '#9ca3af',
+                                }}
+                                title={ifcQtyTitle}
+                              >
+                                {ifcQtyCell}
+                              </td>
+                              <td style={{ padding: '3px 8px', borderBottom: '1px solid #333', fontFamily: 'monospace', fontSize: 10 }}>
+                                {g ? (canLink ? '● ' : '') + g.slice(0, 36) : '—'}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      </div>
     </div>
   )
 }

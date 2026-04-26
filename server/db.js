@@ -1,267 +1,98 @@
 /**
- * SQLite DB 초기화 (users, projects, design_phases, design_revisions)
+ * DB: PostgreSQL 전용. DATABASE_URL 또는 PGHOST·PGPORT·PGUSER·PGPASSWORD·PGDATABASE (libpq 스타일)
+ * 로드 순서: 이미 설정된 process.env → 여러 경로의 .env (IIS/iisnode는 cwd가 달라질 수 있음)
  */
-const Database = require('better-sqlite3')
 const path = require('path')
+const fs = require('fs')
 
-const dbPath = path.join(__dirname, 'sbim-tc.db')
-const db = new Database(dbPath, { timeout: 15000 })
-// 동시 접근 시 대기 후 재시도 (삭제/등록 시 "database is locked" 방지)
-db.pragma('busy_timeout = 15000')
-db.pragma('journal_mode = WAL')
-// 물량파일 삭제 시 quantity_file_items CASCADE 삭제를 위해 외래키 활성화
-db.pragma('foreign_keys = ON')
-
-// -----------------------------------------------------------------------------
-// users
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT NOT NULL UNIQUE,
-    password TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    status TEXT NOT NULL DEFAULT '활성',
-    is_admin INTEGER NOT NULL DEFAULT 0
-  )
-`)
-
-const alterUserCols = [
-  'ALTER TABLE users ADD COLUMN status TEXT DEFAULT \'활성\'',
-  'ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0',
-  'ALTER TABLE users ADD COLUMN role TEXT DEFAULT \'일반 사용자\'',
-  'ALTER TABLE users ADD COLUMN company TEXT',
+const parentDir = path.join(__dirname, '..')
+const isDistServerLayout = path.basename(parentDir) === 'dist'
+const DOTENV_CANDIDATES = [
+  path.join(__dirname, '.env'),
+  path.join(__dirname, '..', '.env'),
+  // …/publish-iis/dist/server 일 때만 …/publish-iis/.env (레거시 …/publish-iis/server 에서는 ../../ 로드 안 함)
+  ...(isDistServerLayout ? [path.join(__dirname, '..', '..', '.env')] : []),
+  path.join(process.cwd(), '.env'),
+  path.join(process.cwd(), 'server', '.env'),
 ]
-alterUserCols.forEach((sql) => { try { db.exec(sql) } catch (_) {} })
 
-// -----------------------------------------------------------------------------
-// projects
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS projects (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )
-`)
-
-;['code', 'client', 'start_date', 'end_date', 'pm', 'status'].forEach((col) => {
-  try { db.exec(`ALTER TABLE projects ADD COLUMN ${col} TEXT`) } catch (_) {}
-})
-;(function checkProjectsColumns() {
-  try {
-    const names = db.prepare("PRAGMA table_info(projects)").all().map((c) => c.name)
-    const required = ['code', 'client', 'start_date', 'end_date', 'pm', 'status']
-    const missing = required.filter((col) => !names.includes(col))
-    if (missing.length) console.warn('[DB] projects 컬럼 부족:', missing.join(', '))
-    else console.log('[DB] projects 컬럼:', names.join(', '))
-  } catch (err) {
-    console.error('[DB] PRAGMA 실패:', err.message)
+/** 존재하는 경로만 순서대로 로드(뒤 파일이 앞을 덮어씀). IIS는 cwd가 server 인 경우가 많음. */
+function tryLoadDotenv () {
+  const loaded = []
+  const seen = new Set()
+  for (const p of DOTENV_CANDIDATES) {
+    const norm = path.normalize(p)
+    if (seen.has(norm)) continue
+    seen.add(norm)
+    try {
+      if (fs.existsSync(p)) {
+        // IIS/시스템에 DATABASE_URL="" 이 있으면 기본 dotenv는 덮어쓰지 않아 .env 가 무시됨 → override
+        require('dotenv').config({ path: p, override: true })
+        loaded.push(p)
+      }
+    } catch (_) {}
   }
-})()
+  return loaded
+}
 
-// -----------------------------------------------------------------------------
-// project_participants (프로젝트별 참여자: 사용자 관리 사용자 검색·선택으로 등록)
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS project_participants (
-    project_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    role_in_project TEXT NOT NULL DEFAULT '참여자',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (project_id, user_id),
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-  )
-`)
+const loadedEnvFiles = tryLoadDotenv()
 
-// -----------------------------------------------------------------------------
-// design_phases, design_revisions
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS design_phases (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    project_id TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (project_id) REFERENCES projects(id)
-  )
-`)
+/**
+ * DATABASE_URL 이 없을 때 libpq 스타일 변수로 합성 (IIS .env 에 PGHOST=... 만 두는 경우)
+ */
+function applyDatabaseUrlFromPgEnv () {
+  const existing = process.env.DATABASE_URL && String(process.env.DATABASE_URL).trim()
+  if (existing) return
+  const host = String(process.env.PGHOST || process.env.PG_HOST || '').trim()
+  const port = String(process.env.PGPORT || process.env.PG_PORT || '5432').trim() || '5432'
+  const user = String(process.env.PGUSER || process.env.PG_USER || '').trim()
+  const pass = String(process.env.PGPASSWORD ?? process.env.PG_PASSWORD ?? '')
+  const db = String(process.env.PGDATABASE || process.env.PG_DATABASE || '').trim()
+  if (!host || !user || !db) return
+  const u = encodeURIComponent(user)
+  const p = encodeURIComponent(pass)
+  const d = encodeURIComponent(db)
+  process.env.DATABASE_URL = p === '' ? `postgresql://${u}@${host}:${port}/${d}` : `postgresql://${u}:${p}@${host}:${port}/${d}`
+}
+applyDatabaseUrlFromPgEnv()
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS design_revisions (
-    id TEXT PRIMARY KEY,
-    design_phase_id TEXT NOT NULL,
-    revision_name TEXT NOT NULL,
-    planned_date TEXT,
-    actual_date TEXT,
-    status TEXT NOT NULL DEFAULT '예정',
-    memo TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (design_phase_id) REFERENCES design_phases(id) ON DELETE CASCADE
-  )
-`)
-
-// -----------------------------------------------------------------------------
-// design_documents (설계도서: 리비전별)
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS design_documents (
-    id TEXT PRIMARY KEY,
-    design_revision_id TEXT NOT NULL,
-    title TEXT NOT NULL,
-    doc_number TEXT,
-    memo TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (design_revision_id) REFERENCES design_revisions(id) ON DELETE CASCADE
-  )
-`)
-
-;['file_name', 'file_path', 'file_path_pdf', 'file_path_dxf'].forEach((col) => {
-  try { db.exec(`ALTER TABLE design_documents ADD COLUMN ${col} TEXT`) } catch (_) {}
-})
-
-// -----------------------------------------------------------------------------
-// design_models (모델 IFC: 리비전별)
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS design_models (
-    id TEXT PRIMARY KEY,
-    design_revision_id TEXT NOT NULL,
-    title TEXT NOT NULL,
-    memo TEXT,
-    file_name TEXT,
-    file_path TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (design_revision_id) REFERENCES design_revisions(id) ON DELETE CASCADE
-  )
-`)
-
-try { db.exec('ALTER TABLE design_models ADD COLUMN file_path_dxf TEXT') } catch (_) {}
-
-// -----------------------------------------------------------------------------
-// design_reviews (설계검토 엑셀: 리비전별)
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS design_reviews (
-    id TEXT PRIMARY KEY,
-    design_revision_id TEXT NOT NULL,
-    title TEXT NOT NULL,
-    memo TEXT,
-    file_name TEXT,
-    file_path TEXT,
-    shared_participant_ids TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (design_revision_id) REFERENCES design_revisions(id) ON DELETE CASCADE
-  )
-`)
-
-;['memo', 'file_name', 'file_path', 'shared_participant_ids'].forEach((col) => {
-  try { db.exec(`ALTER TABLE design_reviews ADD COLUMN ${col} TEXT`) } catch (_) {}
-})
-
-// -----------------------------------------------------------------------------
-// quantity_files (물량파일 엑셀: 리비전별)
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS quantity_files (
-    id TEXT PRIMARY KEY,
-    design_revision_id TEXT NOT NULL,
-    title TEXT NOT NULL,
-    memo TEXT,
-    file_name TEXT,
-    file_path TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (design_revision_id) REFERENCES design_revisions(id) ON DELETE CASCADE
-  )
-`)
-
-// -----------------------------------------------------------------------------
-// quantity_file_items (물량파일 시트 데이터: 부재별산출서 행, dong=시트명 괄호 안 값)
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS quantity_file_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    quantity_file_id TEXT NOT NULL,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    dong TEXT,
-    floor TEXT,
-    sign TEXT,
-    name TEXT,
-    spec TEXT,
-    formula TEXT,
-    result_value TEXT,
-    item_type TEXT,
-    guid TEXT,
-    FOREIGN KEY (quantity_file_id) REFERENCES quantity_files(id) ON DELETE CASCADE
-  )
-`)
-try { db.exec('ALTER TABLE quantity_file_items ADD COLUMN dong TEXT') } catch (_) {}
-try { db.exec('CREATE INDEX IF NOT EXISTS idx_quantity_file_items_file ON quantity_file_items(quantity_file_id)') } catch (_) {}
-
-// -----------------------------------------------------------------------------
-// quantity_name_mappings (명칭 → 콘크리트/거푸집/철근 분류 매핑)
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS quantity_name_mappings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name_pattern TEXT NOT NULL,
-    category TEXT NOT NULL,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )
-`)
-try { db.exec('CREATE INDEX IF NOT EXISTS idx_quantity_name_mappings_category ON quantity_name_mappings(category)') } catch (_) {}
-
-// -----------------------------------------------------------------------------
-// quantity_specs (규격 → 콘크리트/거푸집/철근 분류 매핑)
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS quantity_specs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    spec_value TEXT NOT NULL,
-    category TEXT NOT NULL DEFAULT '콘크리트',
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )
-`)
-try { db.exec('ALTER TABLE quantity_specs ADD COLUMN category TEXT NOT NULL DEFAULT \'콘크리트\'') } catch (_) {}
-
-// -----------------------------------------------------------------------------
-// quantity_dongs (동 목록 관리)
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS quantity_dongs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    dong_value TEXT NOT NULL,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )
-`)
-try { db.exec('CREATE INDEX IF NOT EXISTS idx_quantity_dongs_sort ON quantity_dongs(sort_order)') } catch (_) {}
-try { db.exec('ALTER TABLE quantity_dongs ADD COLUMN gross_area REAL') } catch (_) {}
-
-// -----------------------------------------------------------------------------
-// quantity_floors (층 목록 관리)
-// -----------------------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS quantity_floors (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    floor_value TEXT NOT NULL,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )
-`)
-try { db.exec('CREATE INDEX IF NOT EXISTS idx_quantity_floors_sort ON quantity_floors(sort_order)') } catch (_) {}
-
-module.exports = db
+const url = process.env.DATABASE_URL && String(process.env.DATABASE_URL).trim()
+if (!url) {
+  // IIS stderr는 기본 코드페이지라 한글이 깨질 수 있어 영문으로 안내
+  console.error('[db] FATAL: DATABASE_URL is not set or empty.')
+  console.error('[db] IIS tip: cwd is often .../server — create a file named .env in that folder with:')
+  console.error('[db]   DATABASE_URL=postgresql://USER:PASS@127.0.0.1:5432/DBNAME')
+  console.error('[db]   or PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE (same as libpq)')
+  console.error('[db] Or put .env one level up (next to web.config). Or use web.config appSettings (see web.config comments).')
+  console.error('[db] __dirname=' + __dirname)
+  console.error('[db] process.cwd()=' + process.cwd())
+  console.error('[db] .env files checked (exists?):')
+  const seenLog = new Set()
+  for (const p of DOTENV_CANDIDATES) {
+    const norm = path.normalize(p)
+    if (seenLog.has(norm)) continue
+    seenLog.add(norm)
+    try {
+      console.error('[db]   ' + p + ' => ' + (fs.existsSync(p) ? 'yes' : 'no'))
+    } catch (_) {
+      console.error('[db]   ' + p + ' => ?')
+    }
+  }
+  if (loadedEnvFiles.length) {
+    console.error('[db] Loaded ' + loadedEnvFiles.length + ' .env file(s) but DATABASE_URL still missing/empty inside.')
+  }
+  const stamp = `[${new Date().toISOString()}] [db] FATAL: DATABASE_URL missing. Put .env next to web.config or in server/. See console.\n`
+  try {
+    fs.appendFileSync(path.join(__dirname, 'startup.log'), stamp, 'utf8')
+  } catch (e1) {
+    try {
+      fs.appendFileSync(
+        path.join(process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp', 'sbim-tc-web-boot.log'),
+        stamp + `  (startup.log write failed: ${e1 && e1.message})\n`,
+        'utf8'
+      )
+    } catch (_) {}
+  }
+  process.exit(1)
+}
+module.exports = require('./db-pg')

@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { getUsersApi, approveUserApi, deleteUserApi, updateUserApi, type ApiUserRow } from '../api/auth'
 import type { User, UserFormInput } from '../types/user'
 import UserFormModal from '../components/UserFormModal'
+import { VirtualDataGrid } from '../components/VirtualDataGrid'
 
 function mapApiUserToUser(row: ApiUserRow): User & { statusLabel: string } {
   const role = row.is_admin ? '관리자' : (row.role || '일반 사용자') as User['role']
@@ -296,6 +297,9 @@ export default function UserManagement() {
             {pendingUsers.map((u) => (
               <div key={u.id} className="user-mgmt__approval-item">
                 <span className="user-mgmt__approval-name">{u.name}</span>
+                <span className="user-mgmt__approval-company" title="회사">
+                  {u.company?.trim() ? u.company : '—'}
+                </span>
                 <span className="user-mgmt__approval-email">{u.email}</span>
                 <span className="user-mgmt__approval-date">{u.createdAt}</span>
                 <button
@@ -381,81 +385,91 @@ export default function UserManagement() {
                 <th>작업</th>
               </tr>
             </thead>
-            <tbody>
-              {filteredUsers.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="user-mgmt__empty">
-                    {search ? '검색 결과가 없습니다.' : '등록된 사용자가 없습니다.'}
-                  </td>
-                </tr>
-              ) : (
-                filteredUsers.map((u) => (
-                  <tr
-                    key={u.id}
-                    className="user-mgmt__row"
-                    onDoubleClick={() => openEdit(u)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        openEdit(u)
-                      }
-                    }}
-                    aria-label={`${u.name} 더블클릭 시 수정`}
-                    title="더블클릭 시 수정"
-                  >
-                    <td className="user-mgmt__td-check" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-                      {isProtectedAdmin(u) ? (
-                        <span className="user-mgmt__no-delete" title="기본 관리자 계정은 삭제할 수 없습니다.">—</span>
-                      ) : (
-                        <input
-                          type="checkbox"
-                          checked={selectedIds.has(u.id)}
-                          onChange={() => toggleSelect(u.id)}
-                          disabled={deletingIds.has(u.id)}
-                          aria-label={`${u.name} 선택`}
-                        />
-                      )}
-                    </td>
-                    <td>{u.name}</td>
-                    <td>{u.email}</td>
-                    <td>{u.company || '—'}</td>
-                    <td>{u.role}</td>
-                    <td>
-                      <span className={`user-mgmt__status user-mgmt__status--${u.status === '활성' ? 'active' : 'inactive'}`}>
-                        {statusLabel(u)}
+          </table>
+          {filteredUsers.length === 0 ? (
+            <div className="user-mgmt__empty" style={{ padding: '1rem' }}>
+              {search ? '검색 결과가 없습니다.' : '등록된 사용자가 없습니다.'}
+            </div>
+          ) : (
+            <VirtualDataGrid
+              wrapClassName="virtual-data-grid user-mgmt-virtual-grid"
+              bodyClassName="virtual-data-grid__body user-mgmt-virtual-body"
+              gridTemplateColumns="40px minmax(88px,1fr) minmax(140px,1.6fr) minmax(96px,1fr) minmax(80px,0.9fr) minmax(88px,1fr) minmax(88px,0.85fr) minmax(120px,1.3fr)"
+              rowHeight={52}
+              scrollResetKey={`${search}|${filteredUsers.length}`}
+              getKey={(u) => u.id}
+              getRowProps={(u) => ({
+                className: 'user-mgmt__row',
+                role: 'button',
+                tabIndex: 0,
+                onDoubleClick: () => openEdit(u),
+                onKeyDown: (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    openEdit(u)
+                  }
+                },
+                'aria-label': `${u.name} 더블클릭 시 수정`,
+                title: '더블클릭 시 수정',
+              })}
+              renderRow={(u) => (
+                <>
+                  <span className="user-mgmt__td-check" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                    {isProtectedAdmin(u) ? (
+                      <span className="user-mgmt__no-delete" title="기본 관리자 계정은 삭제할 수 없습니다.">
+                        —
                       </span>
-                    </td>
-                    <td>{u.createdAt}</td>
-                    <td onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-                      <div className="user-mgmt__actions">
-                        {statusLabel(u) === '승인대기' && user?.email && (
-                          <button
-                            type="button"
-                            className="btn btn--sm btn--primary user-mgmt__btn-approve"
-                            disabled={approvingId === u.id}
-                            onClick={() => askApprove(u)}
-                            title="해당 사용자 로그인 허용"
-                          >
-                            {approvingId === u.id ? '처리 중...' : '승인 클릭'}
-                          </button>
-                        )}
+                    ) : (
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(u.id)}
+                        onChange={() => toggleSelect(u.id)}
+                        disabled={deletingIds.has(u.id)}
+                        aria-label={`${u.name} 선택`}
+                      />
+                    )}
+                  </span>
+                  <span>{u.name}</span>
+                  <span>{u.email}</span>
+                  <span>{u.company || '—'}</span>
+                  <span>{u.role}</span>
+                  <span>
+                    <span className={`user-mgmt__status user-mgmt__status--${u.status === '활성' ? 'active' : 'inactive'}`}>
+                      {statusLabel(u)}
+                    </span>
+                  </span>
+                  <span>{u.createdAt}</span>
+                  <span onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                    <div className="user-mgmt__actions">
+                      {statusLabel(u) === '승인대기' && user?.email && (
                         <button
                           type="button"
-                          className="btn btn--sm btn--secondary user-mgmt__btn-edit-hover"
-                          onClick={(e) => { e.stopPropagation(); openEdit(u); }}
-                          title="수정"
+                          className="btn btn--sm btn--primary user-mgmt__btn-approve"
+                          disabled={approvingId === u.id}
+                          onClick={() => askApprove(u)}
+                          title="해당 사용자 로그인 허용"
                         >
-                          수정
+                          {approvingId === u.id ? '처리 중...' : '승인 클릭'}
                         </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                      )}
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--secondary user-mgmt__btn-edit-hover"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          openEdit(u)
+                        }}
+                        title="수정"
+                      >
+                        수정
+                      </button>
+                    </div>
+                  </span>
+                </>
               )}
-            </tbody>
-          </table>
+              items={filteredUsers}
+            />
+          )}
         </div>
       )}
 
@@ -474,7 +488,12 @@ export default function UserManagement() {
             <h2 id="approve-confirm-title" className="modal__title">사용자 승인</h2>
             <div className="modal__body">
               <p>
-                <strong>"{pendingApprove.name}"</strong>( {pendingApprove.email} ) 사용자를 승인하시겠습니까?
+                <strong>"{pendingApprove.name}"</strong>
+                {pendingApprove.company?.trim() ? (
+                  <> · 회사: <strong>{pendingApprove.company}</strong></>
+                ) : null}
+                <br />
+                ( {pendingApprove.email} ) 사용자를 승인하시겠습니까?
               </p>
               <p className="user-mgmt__confirm-note">
                 승인하면 해당 사용자가 로그인할 수 있습니다.

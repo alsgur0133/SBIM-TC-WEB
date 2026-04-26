@@ -6,6 +6,7 @@ interface PendingUser {
   id: string
   name: string
   email: string
+  company?: string | null
   created_at: string
 }
 
@@ -112,6 +113,7 @@ export default function PendingApproval() {
               {list.map((pending) => (
                 <tr key={pending.id}>
                   <td>{pending.name}</td>
+                  <td>{pending.company?.trim() ? pending.company : '—'}</td>
                   <td>{pending.email}</td>
                   <td>{formatDate(pending.created_at)}</td>
                   <td>

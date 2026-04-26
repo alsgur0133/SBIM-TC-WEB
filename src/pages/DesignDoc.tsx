@@ -11,6 +11,9 @@ import {
   getDesignDocFileUrl,
   type DesignDocument,
 } from '../api/designDoc'
+import { TrimbleConnectImportButton } from '../components/TrimbleConnectImportButton'
+import DesignMgmtPageShell from '../components/DesignMgmtPageShell'
+import { VirtualDataGrid } from '../components/VirtualDataGrid'
 
 export default function DesignDoc() {
   const { user } = useAuth()
@@ -26,7 +29,6 @@ export default function DesignDoc() {
   const [formMemo, setFormMemo] = useState('')
   const [formFiles, setFormFiles] = useState<File[]>([])
   const [saving, setSaving] = useState(false)
-  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [filterTitle, setFilterTitle] = useState('')
   const [filterDocNumber, setFilterDocNumber] = useState('')
   const [filterMemo, setFilterMemo] = useState('')
@@ -49,6 +51,73 @@ export default function DesignDoc() {
       return true
     })
   }, [documents, filterTitle, filterDocNumber, filterMemo, filterFile])
+
+  const docKpis = useMemo(() => {
+    if (!selectedProject) return []
+    if (!selectedRevisionId) {
+      return [
+        {
+          label: '등록 도서',
+          value: '—',
+          sub: '리비전을 선택하면 집계됩니다',
+          badge: '대기',
+          badgeVariant: 'neutral' as const,
+        },
+        {
+          label: '파일 첨부',
+          value: '—',
+          sub: '—',
+          badge: '—',
+          badgeVariant: 'neutral' as const,
+        },
+        {
+          label: '필터 일치',
+          value: '—',
+          sub: '—',
+          badge: '—',
+          badgeVariant: 'neutral' as const,
+        },
+      ]
+    }
+    const withFile = documents.filter((d) => !!d.file_path).length
+    const filterOn =
+      !!filterTitle.trim() ||
+      !!filterDocNumber.trim() ||
+      !!filterMemo.trim() ||
+      filterFile !== 'all'
+    return [
+      {
+        label: '등록 도서',
+        value: documents.length,
+        sub: '현재 리비전',
+        badge: 'Total',
+        badgeVariant: 'info' as const,
+      },
+      {
+        label: '파일 첨부',
+        value: withFile,
+        sub: '다운로드 가능',
+        badge: withFile ? '첨부' : '—',
+        badgeVariant: withFile ? ('success' as const) : ('neutral' as const),
+      },
+      {
+        label: '필터 일치',
+        value: filteredDocuments.length,
+        sub: filterOn ? '필터 적용 중' : '전체 표시',
+        badge: filterOn ? 'Filtered' : 'All',
+        badgeVariant: filterOn ? ('warning' as const) : ('neutral' as const),
+      },
+    ]
+  }, [
+    selectedProject,
+    selectedRevisionId,
+    documents,
+    filteredDocuments,
+    filterTitle,
+    filterDocNumber,
+    filterMemo,
+    filterFile,
+  ])
 
   const fetchDocuments = useCallback(() => {
     if (!selectedRevisionId) {
@@ -204,73 +273,97 @@ export default function DesignDoc() {
     }
   }
 
-  const handleDelete = (doc: DesignDocument) => {
-    if (!user?.email || !window.confirm(`"${doc.title}" 설계도서를 삭제하시겠습니까?`)) return
-    setDeletingId(doc.id)
-    deleteDesignDocumentApi(user.email, doc.id)
-      .then((res) => {
-        if (res.success) fetchDocuments()
-        else setError(res.error || '삭제에 실패했습니다.')
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : '삭제에 실패했습니다.'))
-      .finally(() => setDeletingId(null))
-  }
-
   if (!selectedProject) {
     return (
-      <section className="card">
-        <h2>설계도서 관리</h2>
-        <p className="auth-form__error" style={{ marginTop: '0.5rem' }}>
-          설계도서·설계일정·물량 관리는 <strong>프로젝트를 선택</strong>한 후 이용할 수 있습니다.
-        </p>
-        <p style={{ marginTop: '1rem' }}>
-          <Link to="/projects" className="btn btn--primary">
-            프로젝트 관리에서 선택하기
-          </Link>
-        </p>
-      </section>
+      <DesignMgmtPageShell
+        title="설계도서 관리"
+        titleEn="Design Documents"
+        description="리비전별로 설계도서를 등록하고, 파일을 첨부·다운로드할 수 있습니다."
+        kpis={[]}
+      >
+        <section className="card" style={{ margin: 0 }}>
+          <p className="auth-form__error" style={{ marginTop: '0.5rem' }}>
+            설계도서·설계일정·물량 관리는 <strong>프로젝트를 선택</strong>한 후 이용할 수 있습니다.
+          </p>
+          <p style={{ marginTop: '1rem' }}>
+            <Link to="/projects" className="btn btn--primary">
+              프로젝트 관리에서 선택하기
+            </Link>
+          </p>
+        </section>
+      </DesignMgmtPageShell>
     )
   }
 
-  return (
-    <section className="card">
-      <h2>설계도서 관리</h2>
-
-      {error && (
-        <div className="auth-form__error" style={{ marginTop: '0.5rem', marginBottom: '0.5rem' }}>
-          {error}
+  const toolbar =
+    selectedRevisionId ? (
+      <div className="design-doc__toolbar dm-shell__toolbar-inner">
+        <span className="design-doc__revision-label">
+          선택: {selectedPhase?.name} — {selectedRevision?.revision_name}
+        </span>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          {canManage && (
+            <button
+              type="button"
+              className="btn btn--danger btn--sm"
+              onClick={handleBulkDelete}
+              disabled={bulkDeleting || selectedIds.size === 0}
+              title={selectedIds.size === 0 ? '목록에서 삭제할 항목을 선택하세요' : undefined}
+            >
+              {bulkDeleting ? '삭제 중…' : `선택 항목 삭제${selectedIds.size > 0 ? ` (${selectedIds.size})` : ''}`}
+            </button>
+          )}
+          {canManage && user?.email && selectedProject && (
+            <TrimbleConnectImportButton
+              projectId={selectedProject.id}
+              trimbleProjectLinked={!!selectedProject.trimble_connect_project_id}
+              designRevisionId={selectedRevisionId}
+              userEmail={user.email}
+              canManage={canManage}
+              onImported={() => void fetchDocuments()}
+              label="Connect에서 가져오기"
+              defaultImportModels
+              defaultImportDocuments
+              defaultImportQuantity={false}
+            />
+          )}
+          {canManage && (
+            <button type="button" className="btn btn--primary btn--sm" onClick={openCreate}>
+              설계도서 추가
+            </button>
+          )}
         </div>
-      )}
+      </div>
+    ) : null
 
-      {selectedRevisionId && (
-        <>
-          <div className="design-doc__toolbar">
-            <span className="design-doc__revision-label">
-              선택: {selectedPhase?.name} — {selectedRevision?.revision_name}
-            </span>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              {canManage && selectedIds.size > 0 && (
-                <button
-                  type="button"
-                  className="btn btn--danger btn--sm"
-                  onClick={handleBulkDelete}
-                  disabled={bulkDeleting}
-                >
-                  {bulkDeleting ? '삭제 중…' : `선택 항목 삭제 (${selectedIds.size})`}
-                </button>
-              )}
-              {canManage && (
-                <button type="button" className="btn btn--primary btn--sm" onClick={openCreate}>
-                  설계도서 추가
-                </button>
-              )}
+  return (
+    <>
+      <DesignMgmtPageShell
+        title="설계도서 관리"
+        titleEn="Design Documents"
+        description="리비전별로 설계도서를 등록하고, 파일을 첨부·다운로드할 수 있습니다."
+        kpis={docKpis}
+        projectTag={
+          <p className="dm-shell__project-line">
+            프로젝트: {selectedProject.name}
+            {selectedPhase && selectedRevision
+              ? ` · ${selectedPhase.name} / ${selectedRevision.revision_name}`
+              : ''}
+          </p>
+        }
+        toolbar={toolbar}
+        error={error || undefined}
+        loading={!!selectedRevisionId && loadingDocs}
+        loadingText="설계도서 목록을 불러오는 중…"
+        onRefresh={selectedRevisionId ? () => void fetchDocuments() : undefined}
+        refreshDisabled={loadingDocs}
+      >
+        {selectedRevisionId ? (
+          <div className="dm-shell__panel">
+            <div className="dm-shell__panel-head">
+              <h2 className="dm-shell__panel-title">도서 목록</h2>
             </div>
-          </div>
-
-          {loadingDocs ? (
-            <p style={{ color: 'var(--main-text-muted)', marginTop: '1rem' }}>목록을 불러오는 중…</p>
-          ) : (
-            <div className="design-doc__table-wrap">
+            <div className="design-doc__table-wrap project-mgmt__table-wrap dm-shell__table-bleed">
               <table className="project-mgmt__table design-doc__table">
                 <thead>
                   <tr>
@@ -288,7 +381,7 @@ export default function DesignDoc() {
                     <th>도서 번호</th>
                     <th>파일</th>
                     <th>비고</th>
-                    {canManage && <th>작업</th>}
+                    {canManage && <th>수정</th>}
                   </tr>
                   <tr className="design-doc__filter-row">
                     {canManage && <th />}
@@ -337,80 +430,85 @@ export default function DesignDoc() {
                     {canManage && <th />}
                   </tr>
                 </thead>
-                <tbody>
-                  {filteredDocuments.length === 0 ? (
-                    <tr>
-                      <td colSpan={canManage ? 6 : 4} className="project-mgmt__empty">
-                        {documents.length === 0
-                          ? '등록된 설계도서가 없습니다. ' + (canManage ? '설계도서 추가로 등록하세요.' : '')
-                          : '필터 조건에 맞는 항목이 없습니다.'}
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredDocuments.map((doc) => (
-                      <tr key={doc.id}>
-                        {canManage && (
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={selectedIds.has(doc.id)}
-                              onChange={(e) => toggleSelect(doc.id, e.target.checked)}
-                              aria-label={`${doc.title} 선택`}
-                            />
-                          </td>
-                        )}
-                        <td>{doc.title}</td>
-                        <td>{doc.doc_number ?? '—'}</td>
-                        <td>
-                          {doc.file_path ? (
-                            <a href={getDesignDocFileUrl(doc.id)} download target="_blank" rel="noopener noreferrer">
-                              {doc.title || doc.file_name || '다운로드'}
-                            </a>
-                          ) : (
-                            '—'
-                          )}
-                        </td>
-                        <td>{doc.memo ?? '—'}</td>
-                        {canManage && (
-                          <td>
-                            <button
-                              type="button"
-                              className="btn btn--sm btn--secondary"
-                              onClick={() => openEdit(doc)}
-                            >
-                              수정
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn--sm btn--danger"
-                              onClick={() => handleDelete(doc)}
-                              disabled={deletingId === doc.id}
-                            >
-                              {deletingId === doc.id ? '처리 중…' : '삭제'}
-                            </button>
-                          </td>
-                        )}
-                      </tr>
-                    ))
-                  )}
-                </tbody>
               </table>
+              {filteredDocuments.length === 0 ? (
+                <div className="project-mgmt__empty" style={{ padding: '1rem' }}>
+                  {documents.length === 0
+                    ? '등록된 설계도서가 없습니다. ' + (canManage ? '설계도서 추가로 등록하세요.' : '')
+                    : '필터 조건에 맞는 항목이 없습니다.'}
+                </div>
+              ) : (
+                <VirtualDataGrid
+                  wrapClassName="virtual-data-grid virtual-data-grid--dm"
+                  gridTemplateColumns={
+                    canManage
+                      ? '40px minmax(100px,1.4fr) minmax(88px,1.1fr) minmax(100px,1fr) minmax(88px,1fr) minmax(88px,0.9fr)'
+                      : 'minmax(100px,1.5fr) minmax(88px,1.2fr) minmax(100px,1.1fr) minmax(88px,1.1fr)'
+                  }
+                  rowHeight={44}
+                  scrollResetKey={`${filterTitle}|${filterDocNumber}|${filterMemo}|${filterFile}|${filteredDocuments.length}`}
+                  getKey={(doc) => doc.id}
+                  renderRow={(doc) => (
+                    <>
+                      {canManage && (
+                        <span onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(doc.id)}
+                            onChange={(e) => toggleSelect(doc.id, e.target.checked)}
+                            aria-label={`${doc.title} 선택`}
+                          />
+                        </span>
+                      )}
+                      <span>{doc.title}</span>
+                      <span>{doc.doc_number ?? '—'}</span>
+                      <span>
+                        {doc.file_path ? (
+                          <a href={getDesignDocFileUrl(doc.id)} download target="_blank" rel="noopener noreferrer">
+                            {doc.title || doc.file_name || '다운로드'}
+                          </a>
+                        ) : (
+                          '—'
+                        )}
+                      </span>
+                      <span>{doc.memo ?? '—'}</span>
+                      {canManage && (
+                        <span onClick={(e) => e.stopPropagation()}>
+                          <button type="button" className="btn btn--sm btn--secondary" onClick={() => openEdit(doc)}>
+                            수정
+                          </button>
+                        </span>
+                      )}
+                    </>
+                  )}
+                  items={filteredDocuments}
+                />
+              )}
             </div>
-          )}
-        </>
-      )}
-
-      {!selectedRevisionId && selectedPhaseId && (
-        <p style={{ color: 'var(--main-text-muted)', marginTop: '1rem' }}>
-          리비전을 선택하면 해당 리비전의 설계도서 목록이 표시됩니다.
-        </p>
-      )}
-
-      {!selectedPhaseId && !loadingPhases && (
-        <p style={{ color: 'var(--main-text-muted)', marginTop: '1rem' }}>
-          설계 차수와 리비전을 선택하세요. 설계일정 관리에서 차수·리비전을 먼저 등록해 두어야 합니다.
-        </p>
-      )}
+          </div>
+        ) : (
+          <div className="dm-shell__panel">
+            <div className="dm-shell__panel-head">
+              <h2 className="dm-shell__panel-title">도서 목록</h2>
+            </div>
+            <div className="dm-shell__panel-body">
+              {!selectedRevisionId && selectedPhaseId && (
+                <p style={{ color: 'var(--main-text-muted)', margin: 0 }}>
+                  리비전을 선택하면 해당 리비전의 설계도서 목록이 표시됩니다.
+                </p>
+              )}
+              {!selectedPhaseId && !loadingPhases && (
+                <p style={{ color: 'var(--main-text-muted)', margin: 0 }}>
+                  설계 차수와 리비전을 선택하세요. 설계일정 관리에서 차수·리비전을 먼저 등록해 두어야 합니다.
+                </p>
+              )}
+              {loadingPhases && !selectedPhaseId && (
+                <p style={{ color: 'var(--main-text-muted)', margin: 0 }}>설계 일정 정보를 불러오는 중…</p>
+              )}
+            </div>
+          </div>
+        )}
+      </DesignMgmtPageShell>
 
       {modalOpen && (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="design-doc-modal-title">
@@ -504,6 +602,6 @@ export default function DesignDoc() {
           </div>
         </div>
       )}
-    </section>
+    </>
   )
 }

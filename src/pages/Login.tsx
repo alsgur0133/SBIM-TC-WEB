@@ -1,6 +1,7 @@
 import { useState, FormEvent, useEffect } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { getTrimbleLoginUrl } from '../api/trimble'
 
 export default function Login() {
   const { user, login } = useAuth()
@@ -15,6 +16,19 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [trimbleLoading, setTrimbleLoading] = useState(false)
+
+  async function handleTrimbleLogin() {
+    setTrimbleLoading(true)
+    setError('')
+    try {
+      const url = await getTrimbleLoginUrl()
+      window.location.href = url
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Trimble 로그인을 시작할 수 없습니다.')
+      setTrimbleLoading(false)
+    }
+  }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -72,6 +86,17 @@ export default function Login() {
           </div>
           <button type="submit" className="btn btn--primary auth-form__submit" disabled={loading}>
             {loading ? '처리 중...' : '로그인'}
+          </button>
+          <div className="auth-form__divider">
+            <span>또는</span>
+          </div>
+          <button
+            type="button"
+            className="btn btn--secondary auth-form__trimble"
+            onClick={handleTrimbleLogin}
+            disabled={trimbleLoading}
+          >
+            {trimbleLoading ? '이동 중...' : 'Trimble Connect로 로그인'}
           </button>
         </form>
         <p className="auth-card__footer">

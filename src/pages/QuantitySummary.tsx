@@ -13,6 +13,7 @@ import {
   type QuantitySummaryData,
   type QuantityDong,
 } from '../api/quantityFile'
+import { effectiveDesignRevisionIdForSync, postIfcViewerSync } from '../lib/ifcViewerSync'
 import {
   ResponsiveContainer,
   BarChart,
@@ -44,8 +45,34 @@ function sumCategory(row: QuantitySummaryData, concreteCols: string[], formworkC
   let r = 0
   for (const s of concreteCols) c += row.concrete[s] || 0
   for (const s of formworkCols) f += row.formwork[s] || 0
-  for (const s of rebarCols) r += row.rebar[s] || 0
+  for (const s of rebarCols) {
+    r += row.rebar[s] || 0
+    r += row.rebarStructural?.[s] || 0
+    r += row.rebarConstruction?.[s] || 0
+  }
   return { concrete: c, formwork: f, rebar: r }
+}
+
+/** 0·비유효는 대시보드 스타일로 대시(—) 표시 */
+function formatQtyCell(n: number): string {
+  if (!Number.isFinite(n) || n === 0) return '—'
+  return formatNum(n)
+}
+
+function sumRebarByField(
+  row: QuantitySummaryData,
+  specs: string[],
+  field: 'rebar' | 'rebarStructural' | 'rebarConstruction'
+): number {
+  const bag =
+    field === 'rebar'
+      ? row.rebar
+      : field === 'rebarStructural'
+        ? row.rebarStructural || {}
+        : row.rebarConstruction || {}
+  let t = 0
+  for (const s of specs) t += bag[s] || 0
+  return t
 }
 
 /** 지하: FT, PIT, B+숫자+F (기초, 피트, 지하층) */
@@ -122,6 +149,22 @@ export default function QuantitySummary() {
   const [selectedDongForFloor, setSelectedDongForFloor] = useState<string>('')
   const [selectedDongForFloorItem, setSelectedDongForFloorItem] = useState<string>('')
   const [selectedDongForTotal, setSelectedDongForTotal] = useState<string>('')
+
+  const syncIfcViewerFloor = useCallback(
+    (floor: string | null | undefined) => {
+      const rev = effectiveDesignRevisionIdForSync(selectedRevisionId)
+      const f = floor?.trim()
+      if (!rev || !f) return
+      postIfcViewerSync({
+        v: 1,
+        action: 'highlightFloor',
+        designRevisionId: rev,
+        projectId: selectedProject?.id,
+        floor: f,
+      })
+    },
+    [selectedRevisionId, selectedProject?.id]
+  )
   const [dongList, setDongList] = useState<{ dong_value: string; gross_area?: number | null }[]>([])
   const [grossAreaModalOpen, setGrossAreaModalOpen] = useState(false)
   const [grossAreaModalDongs, setGrossAreaModalDongs] = useState<QuantityDong[]>([])
@@ -440,7 +483,11 @@ export default function QuantitySummary() {
       } else if (heatmapMaterial === 'formwork') {
         for (const s of formworkColumns) v += rowData.formwork[s] || 0
       } else {
-        for (const s of rebarColumns) v += rowData.rebar[s] || 0
+        for (const s of rebarColumns) {
+          v += rowData.rebar[s] || 0
+          v += rowData.rebarStructural?.[s] || 0
+          v += rowData.rebarConstruction?.[s] || 0
+        }
       }
       addValue(dong, floor, v)
     }
@@ -475,13 +522,18 @@ export default function QuantitySummary() {
       }
       for (const s of concreteColumns) entry.concrete += rowData.concrete[s] || 0
       for (const s of formworkColumns) entry.formwork += rowData.formwork[s] || 0
-      for (const s of rebarColumns) entry.rebar += rowData.rebar[s] || 0
+      for (const s of rebarColumns) {
+        entry.rebar += rowData.rebar[s] || 0
+        entry.rebar += rowData.rebarStructural?.[s] || 0
+        entry.rebar += rowData.rebarConstruction?.[s] || 0
+      }
     }
     return Array.from(map.values()).sort((a, b) => a.floor.localeCompare(b.floor, 'ko'))
   }, [filteredFloorRows, data, concreteColumns, formworkColumns, rebarColumns])
 
   const floorItemChartData = useMemo(() => {
-    const map = new Map<string, { floor: string }>()
+    type FloorItemChartRow = { floor: string; [k: string]: number | string }
+    const map = new Map<string, FloorItemChartRow>()
     const itemTypesSet = new Set<string>()
     const cols =
       floorItemMaterial === 'concrete'
@@ -511,10 +563,15 @@ export default function QuantitySummary() {
       } else if (floorItemMaterial === 'formwork') {
         for (const s of cols) sum += rowData.formwork[s] || 0
       } else {
-        for (const s of cols) sum += rowData.rebar[s] || 0
+        for (const s of cols) {
+          sum += rowData.rebar[s] || 0
+          sum += rowData.rebarStructural?.[s] || 0
+          sum += rowData.rebarConstruction?.[s] || 0
+        }
       }
 
-      entry[itemType] = (entry[itemType] || 0) + sum
+      const prev = typeof entry[itemType] === 'number' ? entry[itemType] : 0
+      entry[itemType] = prev + sum
       itemTypesSet.add(itemType)
     }
 
@@ -525,39 +582,66 @@ export default function QuantitySummary() {
 
   /** 층별집계표 엑셀 내보내기 */
   const handleExportFloorExcel = useCallback(() => {
-    const header1 = ['동', '층', ...(concreteColumns.length > 0 ? ['콘크리트(m³)', ...concreteColumns.map(() => ''), '소계'] : []), ...(formworkColumns.length > 0 ? ['거푸집(m²)', ...formworkColumns.map(() => ''), '소계'] : []), ...(rebarColumns.length > 0 ? ['철근(ton)', ...rebarColumns.map(() => ''), '소계'] : [])]
-    const header2 = ['', '', ...(concreteColumns.length > 0 ? ['', ...concreteColumns, ''] : []), ...(formworkColumns.length > 0 ? ['', ...formworkColumns, ''] : []), ...(rebarColumns.length > 0 ? ['', ...rebarColumns, ''] : [])]
-    const aoa: (string | number)[][] = [
-      ['층별집계표'],
-      [],
-      header1,
-      header2,
+    const rebarHead1 = (title: string) =>
+      rebarColumns.length > 0 ? [title, ...rebarColumns.map(() => ''), '소계'] : []
+    const rebarHead2 = () => (rebarColumns.length > 0 ? ['', ...rebarColumns, ''] : [])
+    const header1 = [
+      '동',
+      '층',
+      ...(concreteColumns.length > 0 ? ['콘크리트(m³)', ...concreteColumns.map(() => ''), '소계'] : []),
+      ...(formworkColumns.length > 0 ? ['폼(m²)', ...formworkColumns.map(() => ''), '소계'] : []),
+      ...rebarHead1('철근(ton)'),
+      ...rebarHead1('구조용 철근(ton)'),
+      ...rebarHead1('시공용 철근(ton)'),
     ]
+    const header2 = [
+      '',
+      '',
+      ...(concreteColumns.length > 0 ? ['', ...concreteColumns, ''] : []),
+      ...(formworkColumns.length > 0 ? ['', ...formworkColumns, ''] : []),
+      ...rebarHead2(),
+      ...rebarHead2(),
+      ...rebarHead2(),
+    ]
+    const aoa: (string | number)[][] = [['물량 집계 · 층별집계표'], [], header1, header2]
     const targetRows = filteredFloorRows
     for (const r of targetRows) {
       const key = rowKey(r)
       const rowData = data[key] || { concrete: {}, formwork: {}, rebar: {} }
-      let subC = 0, subF = 0, subR = 0
+      let subC = 0
+      let subF = 0
       for (const s of concreteColumns) subC += rowData.concrete[s] || 0
       for (const s of formworkColumns) subF += rowData.formwork[s] || 0
-      for (const s of rebarColumns) subR += rowData.rebar[s] || 0
+      const subRg = sumRebarByField(rowData, rebarColumns, 'rebar')
+      const subRs = sumRebarByField(rowData, rebarColumns, 'rebarStructural')
+      const subRc = sumRebarByField(rowData, rebarColumns, 'rebarConstruction')
       aoa.push([
         r.dong ?? '—',
         r.floor ?? '—',
         ...(concreteColumns.length > 0 ? [...concreteColumns.map((spec) => rowData.concrete[spec] ?? 0), subC] : []),
         ...(formworkColumns.length > 0 ? [...formworkColumns.map((spec) => rowData.formwork[spec] ?? 0), subF] : []),
-        ...(rebarColumns.length > 0 ? [...rebarColumns.map((spec) => rowData.rebar[spec] ?? 0), subR] : []),
+        ...(rebarColumns.length > 0
+          ? [
+              ...rebarColumns.map((spec) => rowData.rebar[spec] ?? 0),
+              subRg,
+              ...rebarColumns.map((spec) => rowData.rebarStructural?.[spec] ?? 0),
+              subRs,
+              ...rebarColumns.map((spec) => rowData.rebarConstruction?.[spec] ?? 0),
+              subRc,
+            ]
+          : []),
       ])
     }
     const ws = XLSX.utils.aoa_to_sheet(aoa)
     const nConcrete = concreteColumns.length ? concreteColumns.length + 2 : 0
     const nFormwork = formworkColumns.length ? formworkColumns.length + 2 : 0
-    const nRebar = rebarColumns.length ? rebarColumns.length + 2 : 0
+    const nRebarOne = rebarColumns.length ? rebarColumns.length + 2 : 0
     const colWidths = [
-      10, 14,
+      10,
+      14,
       ...Array(nConcrete).fill(12),
       ...Array(nFormwork).fill(12),
-      ...Array(nRebar).fill(12),
+      ...Array(nRebarOne * 3).fill(11),
     ]
     styleExcelSheet(ws, { colWidths, mergeTitleRows: 1, numberFormat: '#,##0.00' })
     const wb = XLSX.utils.book_new()
@@ -567,40 +651,70 @@ export default function QuantitySummary() {
 
   /** 층-부재별집계표 엑셀 내보내기 */
   const handleExportFloorItemExcel = useCallback(() => {
-    const header1 = ['동', '층', '부재유형', ...(concreteColumns.length > 0 ? ['콘크리트(m²)', ...concreteColumns.map(() => ''), '소계'] : []), ...(formworkColumns.length > 0 ? ['거푸집(m²)', ...formworkColumns.map(() => ''), '소계'] : []), ...(rebarColumns.length > 0 ? ['철근(ton)', ...rebarColumns.map(() => ''), '소계'] : [])]
-    const header2 = ['', '', '', ...(concreteColumns.length > 0 ? ['', ...concreteColumns, ''] : []), ...(formworkColumns.length > 0 ? ['', ...formworkColumns, ''] : []), ...(rebarColumns.length > 0 ? ['', ...rebarColumns, ''] : [])]
-    const aoa: (string | number)[][] = [
-      ['층-부재별집계표'],
-      [],
-      header1,
-      header2,
+    const rebarHead1 = (title: string) =>
+      rebarColumns.length > 0 ? [title, ...rebarColumns.map(() => ''), '소계'] : []
+    const rebarHead2 = () => (rebarColumns.length > 0 ? ['', ...rebarColumns, ''] : [])
+    const header1 = [
+      '동',
+      '층',
+      '부재유형',
+      ...(concreteColumns.length > 0 ? ['콘크리트(m³)', ...concreteColumns.map(() => ''), '소계'] : []),
+      ...(formworkColumns.length > 0 ? ['폼(m²)', ...formworkColumns.map(() => ''), '소계'] : []),
+      ...rebarHead1('철근(ton)'),
+      ...rebarHead1('구조용 철근(ton)'),
+      ...rebarHead1('시공용 철근(ton)'),
     ]
+    const header2 = [
+      '',
+      '',
+      '',
+      ...(concreteColumns.length > 0 ? ['', ...concreteColumns, ''] : []),
+      ...(formworkColumns.length > 0 ? ['', ...formworkColumns, ''] : []),
+      ...rebarHead2(),
+      ...rebarHead2(),
+      ...rebarHead2(),
+    ]
+    const aoa: (string | number)[][] = [['물량 집계 · 층-부재별집계표'], [], header1, header2]
     const targetRows = filteredItemTypeRows
     for (const r of targetRows) {
       const key = itemTypeRowKey(r)
       const rowData = itemTypeData[key] || { concrete: {}, formwork: {}, rebar: {} }
-      let subC = 0, subF = 0, subR = 0
+      let subC = 0
+      let subF = 0
       for (const s of concreteColumns) subC += rowData.concrete[s] || 0
       for (const s of formworkColumns) subF += rowData.formwork[s] || 0
-      for (const s of rebarColumns) subR += rowData.rebar[s] || 0
+      const subRg = sumRebarByField(rowData, rebarColumns, 'rebar')
+      const subRs = sumRebarByField(rowData, rebarColumns, 'rebarStructural')
+      const subRc = sumRebarByField(rowData, rebarColumns, 'rebarConstruction')
       aoa.push([
         r.dong ?? '—',
         r.floor ?? '—',
         r.item_type ?? '—',
         ...(concreteColumns.length > 0 ? [...concreteColumns.map((spec) => rowData.concrete[spec] ?? 0), subC] : []),
         ...(formworkColumns.length > 0 ? [...formworkColumns.map((spec) => rowData.formwork[spec] ?? 0), subF] : []),
-        ...(rebarColumns.length > 0 ? [...rebarColumns.map((spec) => rowData.rebar[spec] ?? 0), subR] : []),
+        ...(rebarColumns.length > 0
+          ? [
+              ...rebarColumns.map((spec) => rowData.rebar[spec] ?? 0),
+              subRg,
+              ...rebarColumns.map((spec) => rowData.rebarStructural?.[spec] ?? 0),
+              subRs,
+              ...rebarColumns.map((spec) => rowData.rebarConstruction?.[spec] ?? 0),
+              subRc,
+            ]
+          : []),
       ])
     }
     const ws = XLSX.utils.aoa_to_sheet(aoa)
     const nConcrete = concreteColumns.length ? concreteColumns.length + 2 : 0
     const nFormwork = formworkColumns.length ? formworkColumns.length + 2 : 0
-    const nRebar = rebarColumns.length ? rebarColumns.length + 2 : 0
+    const nRebarOne = rebarColumns.length ? rebarColumns.length + 2 : 0
     const colWidths = [
-      10, 14, 14,
+      10,
+      14,
+      14,
       ...Array(nConcrete).fill(12),
       ...Array(nFormwork).fill(12),
-      ...Array(nRebar).fill(12),
+      ...Array(nRebarOne * 3).fill(11),
     ]
     styleExcelSheet(ws, { colWidths, mergeTitleRows: 1, numberFormat: '#,##0.00' })
     const wb = XLSX.utils.book_new()
@@ -1485,18 +1599,26 @@ export default function QuantitySummary() {
                   <th rowSpan={2} style={{ verticalAlign: 'middle', borderBottom: '1px solid var(--main-border)' }}>부재유형</th>
                   {concreteColumns.length > 0 && (
                     <th colSpan={concreteColumns.length + 1} style={{ borderBottom: '1px solid var(--main-border)', textAlign: 'center' }}>
-                      콘크리트(m²)
+                      콘크리트(m³)
                     </th>
                   )}
                   {formworkColumns.length > 0 && (
                     <th colSpan={formworkColumns.length + 1} style={{ borderBottom: '1px solid var(--main-border)', textAlign: 'center' }}>
-                      거푸집(m²)
+                      폼(m²)
                     </th>
                   )}
                   {rebarColumns.length > 0 && (
-                    <th colSpan={rebarColumns.length + 1} style={{ borderBottom: '1px solid var(--main-border)', textAlign: 'center' }}>
-                      철근(ton)
-                    </th>
+                    <>
+                      <th colSpan={rebarColumns.length + 1} style={{ borderBottom: '1px solid var(--main-border)', textAlign: 'center' }}>
+                        철근(ton)
+                      </th>
+                      <th colSpan={rebarColumns.length + 1} style={{ borderBottom: '1px solid var(--main-border)', textAlign: 'center' }}>
+                        구조용 철근(ton)
+                      </th>
+                      <th colSpan={rebarColumns.length + 1} style={{ borderBottom: '1px solid var(--main-border)', textAlign: 'center' }}>
+                        시공용 철근(ton)
+                      </th>
+                    </>
                   )}
                 </tr>
                 <tr>
@@ -1508,10 +1630,22 @@ export default function QuantitySummary() {
                     <th key={spec} style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>{spec}</th>
                   ))}
                   {formworkColumns.length > 0 && <th style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>소계</th>}
-                  {rebarColumns.map((spec) => (
-                    <th key={spec} style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>{spec}</th>
-                  ))}
-                  {rebarColumns.length > 0 && <th style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>소계</th>}
+                  {rebarColumns.length > 0 && (
+                    <>
+                      {rebarColumns.map((spec) => (
+                        <th key={`rg-${spec}`} style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>{spec}</th>
+                      ))}
+                      <th style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>소계</th>
+                      {rebarColumns.map((spec) => (
+                        <th key={`rs-${spec}`} style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>{spec}</th>
+                      ))}
+                      <th style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>소계</th>
+                      {rebarColumns.map((spec) => (
+                        <th key={`rc-${spec}`} style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>{spec}</th>
+                      ))}
+                      <th style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>소계</th>
+                    </>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -1522,30 +1656,45 @@ export default function QuantitySummary() {
                   for (const spec of concreteColumns) subConcrete += rowData.concrete[spec] || 0
                   let subFormwork = 0
                   for (const spec of formworkColumns) subFormwork += rowData.formwork[spec] || 0
-                  let subRebar = 0
-                  for (const spec of rebarColumns) subRebar += rowData.rebar[spec] || 0
+                  const subRg = sumRebarByField(rowData, rebarColumns, 'rebar')
+                  const subRs = sumRebarByField(rowData, rebarColumns, 'rebarStructural')
+                  const subRc = sumRebarByField(rowData, rebarColumns, 'rebarConstruction')
                   return (
-                    <tr key={key}>
+                    <tr
+                      key={key}
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => syncIfcViewerFloor(r.floor)}
+                    >
                       <td>{r.dong ?? '—'}</td>
                       <td>{r.floor ?? '—'}</td>
                       <td>{r.item_type ?? '—'}</td>
                       {concreteColumns.map((spec) => (
-                        <td key={spec} style={{ textAlign: 'right' }}>{formatNum(rowData.concrete[spec] || 0)}</td>
+                        <td key={spec} style={{ textAlign: 'right' }}>{formatQtyCell(rowData.concrete[spec] || 0)}</td>
                       ))}
                       {concreteColumns.length > 0 && (
-                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatNum(subConcrete)}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatQtyCell(subConcrete)}</td>
                       )}
                       {formworkColumns.map((spec) => (
-                        <td key={spec} style={{ textAlign: 'right' }}>{formatNum(rowData.formwork[spec] || 0)}</td>
+                        <td key={spec} style={{ textAlign: 'right' }}>{formatQtyCell(rowData.formwork[spec] || 0)}</td>
                       ))}
                       {formworkColumns.length > 0 && (
-                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatNum(subFormwork)}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatQtyCell(subFormwork)}</td>
                       )}
-                      {rebarColumns.map((spec) => (
-                        <td key={spec} style={{ textAlign: 'right' }}>{formatNum(rowData.rebar[spec] || 0)}</td>
-                      ))}
                       {rebarColumns.length > 0 && (
-                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatNum(subRebar)}</td>
+                        <>
+                          {rebarColumns.map((spec) => (
+                            <td key={`rg-${spec}`} style={{ textAlign: 'right' }}>{formatQtyCell(rowData.rebar[spec] || 0)}</td>
+                          ))}
+                          <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatQtyCell(subRg)}</td>
+                          {rebarColumns.map((spec) => (
+                            <td key={`rs-${spec}`} style={{ textAlign: 'right' }}>{formatQtyCell(rowData.rebarStructural?.[spec] || 0)}</td>
+                          ))}
+                          <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatQtyCell(subRs)}</td>
+                          {rebarColumns.map((spec) => (
+                            <td key={`rc-${spec}`} style={{ textAlign: 'right' }}>{formatQtyCell(rowData.rebarConstruction?.[spec] || 0)}</td>
+                          ))}
+                          <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatQtyCell(subRc)}</td>
+                        </>
                       )}
                     </tr>
                   )
@@ -1705,18 +1854,26 @@ export default function QuantitySummary() {
                 <th rowSpan={2} style={{ verticalAlign: 'middle', borderBottom: '1px solid var(--main-border)' }}>층</th>
                 {concreteColumns.length > 0 && (
                   <th colSpan={concreteColumns.length + 1} style={{ borderBottom: '1px solid var(--main-border)', textAlign: 'center' }}>
-                    콘크리트(m²)
+                    콘크리트(m³)
                   </th>
                 )}
                 {formworkColumns.length > 0 && (
                   <th colSpan={formworkColumns.length + 1} style={{ borderBottom: '1px solid var(--main-border)', textAlign: 'center' }}>
-                    거푸집(m²)
+                    폼(m²)
                   </th>
                 )}
                 {rebarColumns.length > 0 && (
-                  <th colSpan={rebarColumns.length + 1} style={{ borderBottom: '1px solid var(--main-border)', textAlign: 'center' }}>
-                    철근(ton)
-                  </th>
+                  <>
+                    <th colSpan={rebarColumns.length + 1} style={{ borderBottom: '1px solid var(--main-border)', textAlign: 'center' }}>
+                      철근(ton)
+                    </th>
+                    <th colSpan={rebarColumns.length + 1} style={{ borderBottom: '1px solid var(--main-border)', textAlign: 'center' }}>
+                      구조용 철근(ton)
+                    </th>
+                    <th colSpan={rebarColumns.length + 1} style={{ borderBottom: '1px solid var(--main-border)', textAlign: 'center' }}>
+                      시공용 철근(ton)
+                    </th>
+                  </>
                 )}
               </tr>
               <tr>
@@ -1728,10 +1885,22 @@ export default function QuantitySummary() {
                   <th key={spec} style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>{spec}</th>
                 ))}
                 {formworkColumns.length > 0 && <th style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>소계</th>}
-                {rebarColumns.map((spec) => (
-                  <th key={spec} style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>{spec}</th>
-                ))}
-                {rebarColumns.length > 0 && <th style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>소계</th>}
+                {rebarColumns.length > 0 && (
+                  <>
+                    {rebarColumns.map((spec) => (
+                      <th key={`fg-${spec}`} style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>{spec}</th>
+                    ))}
+                    <th style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>소계</th>
+                    {rebarColumns.map((spec) => (
+                      <th key={`fs-${spec}`} style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>{spec}</th>
+                    ))}
+                    <th style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>소계</th>
+                    {rebarColumns.map((spec) => (
+                      <th key={`fc-${spec}`} style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>{spec}</th>
+                    ))}
+                    <th style={{ fontWeight: 'normal', fontSize: '0.875rem' }}>소계</th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -1742,29 +1911,44 @@ export default function QuantitySummary() {
                 for (const spec of concreteColumns) subConcrete += rowData.concrete[spec] || 0
                 let subFormwork = 0
                 for (const spec of formworkColumns) subFormwork += rowData.formwork[spec] || 0
-                let subRebar = 0
-                for (const spec of rebarColumns) subRebar += rowData.rebar[spec] || 0
+                const subRg = sumRebarByField(rowData, rebarColumns, 'rebar')
+                const subRs = sumRebarByField(rowData, rebarColumns, 'rebarStructural')
+                const subRc = sumRebarByField(rowData, rebarColumns, 'rebarConstruction')
                 return (
-                  <tr key={key}>
+                  <tr
+                    key={key}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => syncIfcViewerFloor(r.floor)}
+                  >
                     <td>{r.dong ?? '—'}</td>
                     <td>{r.floor ?? '—'}</td>
                     {concreteColumns.map((spec) => (
-                      <td key={spec} style={{ textAlign: 'right' }}>{formatNum(rowData.concrete[spec] || 0)}</td>
+                      <td key={spec} style={{ textAlign: 'right' }}>{formatQtyCell(rowData.concrete[spec] || 0)}</td>
                     ))}
                     {concreteColumns.length > 0 && (
-                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatNum(subConcrete)}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatQtyCell(subConcrete)}</td>
                     )}
                     {formworkColumns.map((spec) => (
-                      <td key={spec} style={{ textAlign: 'right' }}>{formatNum(rowData.formwork[spec] || 0)}</td>
+                      <td key={spec} style={{ textAlign: 'right' }}>{formatQtyCell(rowData.formwork[spec] || 0)}</td>
                     ))}
                     {formworkColumns.length > 0 && (
-                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatNum(subFormwork)}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatQtyCell(subFormwork)}</td>
                     )}
-                    {rebarColumns.map((spec) => (
-                      <td key={spec} style={{ textAlign: 'right' }}>{formatNum(rowData.rebar[spec] || 0)}</td>
-                    ))}
                     {rebarColumns.length > 0 && (
-                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatNum(subRebar)}</td>
+                      <>
+                        {rebarColumns.map((spec) => (
+                          <td key={`fg-${spec}`} style={{ textAlign: 'right' }}>{formatQtyCell(rowData.rebar[spec] || 0)}</td>
+                        ))}
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatQtyCell(subRg)}</td>
+                        {rebarColumns.map((spec) => (
+                          <td key={`fs-${spec}`} style={{ textAlign: 'right' }}>{formatQtyCell(rowData.rebarStructural?.[spec] || 0)}</td>
+                        ))}
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatQtyCell(subRs)}</td>
+                        {rebarColumns.map((spec) => (
+                          <td key={`fc-${spec}`} style={{ textAlign: 'right' }}>{formatQtyCell(rowData.rebarConstruction?.[spec] || 0)}</td>
+                        ))}
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatQtyCell(subRc)}</td>
+                      </>
                     )}
                   </tr>
                 )

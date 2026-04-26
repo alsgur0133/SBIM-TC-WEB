@@ -7,6 +7,8 @@ interface ParticipantPickerModalProps {
   projectId: string
   projectName: string
   userEmail: string
+  /** Trimble Connect 참여자 초대용(있으면 서버에서 Connect API 호출 시도) */
+  trimbleAccessToken?: string | null
   /** 이미 참여 중인 user_id 목록 (선택 목록에서 제외) */
   existingParticipantIds: Set<string>
   onClose: () => void
@@ -20,6 +22,7 @@ export default function ParticipantPickerModal({
   projectId,
   projectName,
   userEmail,
+  trimbleAccessToken,
   existingParticipantIds,
   onClose,
   onAdded,
@@ -99,9 +102,22 @@ export default function ParticipantPickerModal({
     }
     setError('')
     setSaving(true)
-    addProjectParticipantsApi(projectId, userEmail, Array.from(selectedIds), roleInProject)
+    addProjectParticipantsApi(projectId, userEmail, Array.from(selectedIds), roleInProject, {
+      trimbleAccessToken: trimbleAccessToken || undefined,
+    })
       .then((res) => {
         if (res.success) {
+          const inv = res.trimbleConnectInvite
+          if (inv && inv.ok === false && !inv.skipped) {
+            window.alert(
+              'BRACE에는 참여자가 추가되었으나 Trimble Connect 초대에 실패했을 수 있습니다.\n\n' +
+                (inv.error || inv.reason || 'Connect API 오류')
+            )
+          } else if (inv && inv.skipped && inv.reason) {
+            window.alert(inv.reason)
+          } else if (inv && inv.partialErrors?.length) {
+            window.alert('일부 사용자에 대해 Trimble Connect 초대가 완료되지 않았을 수 있습니다.\n' + inv.partialErrors.join('\n'))
+          }
           onAdded()
           onClose()
         } else {

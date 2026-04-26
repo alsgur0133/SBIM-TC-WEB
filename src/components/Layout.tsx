@@ -1,18 +1,49 @@
 import { useState, useMemo, useEffect } from 'react'
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { resolveAppHref } from '../lib/app-href'
 import { useAuth } from '../contexts/AuthContext'
+import { canAccessProjectManagement, canAccessUserManagement } from '../lib/auth-access'
 import { useProject } from '../contexts/ProjectContext'
 import { useDesignSchedule } from '../contexts/DesignScheduleContext'
 import type { Project } from '../api/projects'
-
+import ThemeToggle from './ThemeToggle'
+import {
+  IconBarChart,
+  IconBox,
+  IconBriefcase,
+  IconCalendar,
+  IconClipboardCheck,
+  IconCode,
+  IconSettings,
+  IconCompare,
+  IconDrafting,
+  IconFileStack,
+  IconFolderKanban,
+  IconHome,
+  IconInfo,
+  IconList,
+  IconLogOut,
+  IconPackage,
+  IconTable,
+  IconUpload,
+  IconUser,
+  IconUserCog,
+  IconUsers,
+  IconViewer3D,
+} from './SidebarIcons'
 const PATH_LABELS: Record<string, string> = {
   '/': '홈',
+  '/dashboard': '대시보드',
   '/projects': '프로젝트 목록',
   '/projects/participants': '프로젝트 참여자 관리',
   '/design-doc': '설계도서 관리',
   '/design-review': '설계검토 관리',
   '/design-schedule': '설계일정 관리',
   '/design-model': '모델 관리',
+  '/design-model/info': '모델 정보',
+  '/trimble-viewer': '모델 뷰어',
+  '/settings': '설정',
+  '/code-mgmt': '코드관리',
   '/quantity': '물량 관리',
   '/quantity/file-registration': '물량파일 등록',
   '/quantity/summary': '물량집계표',
@@ -25,12 +56,16 @@ function Breadcrumb() {
   const location = useLocation()
   const items = useMemo(() => {
     const pathname = location.pathname
-    const list: { path: string; label: string }[] = [{ path: '/', label: '홈' }]
+    const list: { path: string; label: string }[] = [{ path: '/dashboard', label: '홈' }]
     const label = pathname.startsWith('/quantity/summary')
       ? '물량집계표'
       : pathname.startsWith('/quantity/compare')
         ? '물량비교'
-        : PATH_LABELS[pathname]
+        : pathname.startsWith('/settings')
+        ? '설정'
+        : pathname.startsWith('/code-mgmt')
+          ? '코드관리'
+          : PATH_LABELS[pathname]
     if (pathname !== '/' && label) {
       list.push({ path: pathname, label })
     }
@@ -57,22 +92,26 @@ function Breadcrumb() {
 }
 
 const projectSubMenus = [
-  { path: '/projects', label: '프로젝트 목록' },
-  { path: '/projects/participants', label: '프로젝트 참여자 관리' },
+  { path: '/projects', label: '프로젝트 목록', Icon: IconList },
+  { path: '/projects/participants', label: '프로젝트 참여자 관리', Icon: IconUsers },
 ] as const
 
 const designSubMenus = [
-  { path: '/design-schedule', label: '설계일정 관리' },
-  { path: '/design-doc', label: '설계도서 관리' },
-  { path: '/design-review', label: '설계검토 관리' },
-  { path: '/design-model', label: '모델 관리' },
+  { path: '/design-schedule', label: '설계일정 관리', Icon: IconCalendar },
+  { path: '/design-doc', label: '설계도서 관리', Icon: IconFileStack },
+  { path: '/design-review', label: '설계검토 관리', Icon: IconClipboardCheck },
+] as const
+
+const modelSubMenus = [
+  { path: '/design-model', label: '모델 관리', end: true as const, Icon: IconPackage },
+  { path: '/design-model/info', label: '모델 정보', end: true as const, Icon: IconInfo },
 ] as const
 
 const quantitySubMenus = [
-  { path: '/quantity', label: '물량 현황' },
-  { path: '/quantity/file-registration', label: '물량파일 등록' },
-  { path: '/quantity/summary', label: '물량집계표' },
-  { path: '/quantity/compare', label: '물량비교' },
+  { path: '/quantity', label: '물량 데이터', Icon: IconTable },
+  { path: '/quantity/file-registration', label: '물량파일 등록', Icon: IconUpload },
+  { path: '/quantity/summary', label: '물량집계표', Icon: IconBarChart },
+  { path: '/quantity/compare', label: '물량비교', Icon: IconCompare },
 ] as const
 
 function formatDate(s: string) {
@@ -82,7 +121,8 @@ function formatDate(s: string) {
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [designMenuOpen, setDesignMenuOpen] = useState(true)
+  const [designMenuOpen, setDesignMenuOpen] = useState(false)
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [quantityMenuOpen, setQuantityMenuOpen] = useState(false)
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
   const { user, logout } = useAuth()
@@ -99,16 +139,25 @@ export default function Layout() {
   const navigate = useNavigate()
   const location = useLocation()
   const isProjectMenuActive = projectSubMenus.some(({ path }) => location.pathname.startsWith(path))
-  const [projectMenuOpen, setProjectMenuOpen] = useState(isProjectMenuActive)
+  const showProjectMgmt = user ? canAccessProjectManagement(user) : false
+  const showUserMgmt = user ? canAccessUserManagement(user) : false
+  const [projectMenuOpen, setProjectMenuOpen] = useState(showProjectMgmt && isProjectMenuActive)
   const isDesignActive = designSubMenus.some(({ path }) => location.pathname.startsWith(path))
+  const isModelMenuActiveWithViewer =
+    location.pathname.startsWith('/design-model') || location.pathname === '/trimble-viewer'
   const isQuantityMenuActive = quantitySubMenus.some(({ path }) => location.pathname.startsWith(path))
-
   useEffect(() => {
-    if (isProjectMenuActive && !projectMenuOpen) setProjectMenuOpen(true)
-  }, [isProjectMenuActive])
+    if (showProjectMgmt && isProjectMenuActive && !projectMenuOpen) setProjectMenuOpen(true)
+  }, [isProjectMenuActive, showProjectMgmt])
+  useEffect(() => {
+    if (isModelMenuActiveWithViewer && !modelMenuOpen) setModelMenuOpen(true)
+  }, [isModelMenuActiveWithViewer])
   useEffect(() => {
     if (isQuantityMenuActive && !quantityMenuOpen) setQuantityMenuOpen(true)
   }, [isQuantityMenuActive])
+  useEffect(() => {
+    if (isDesignActive && !designMenuOpen) setDesignMenuOpen(true)
+  }, [isDesignActive])
 
   function handleSelectProject(p: Project) {
     setSelectedProject(p)
@@ -120,20 +169,36 @@ export default function Layout() {
     navigate('/')
   }
 
-  /** 모델 뷰어를 새 브라우저 창으로 열기 (선택된 리비전의 모델 목록에서 선택 가능) */
+  /** 모델 뷰어: 선택된 프로젝트의 Trimble Connect ID가 있으면 쿼리로 넘겨 뷰어 연결 안정화 */
   function openModelViewerInNewWindow() {
-    const w = 960
-    const h = 640
-    const left = Math.max(0, (window.screen.width - w) / 2)
-    const top = Math.max(0, (window.screen.height - h) / 2)
-    const params = new URLSearchParams()
-    if (selectedRevisionId) params.set('designRevisionId', selectedRevisionId)
-    const url = params.toString() ? `/model-viewer?${params.toString()}` : '/model-viewer'
-    window.open(
-      url,
-      'modelViewer',
-      `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=no`
-    )
+    const qp = new URLSearchParams()
+    const tcId = selectedProject?.trimble_connect_project_id?.trim()
+    if (tcId) qp.set('trimbleConnectProjectId', tcId)
+    if (selectedRevisionId?.trim()) qp.set('designRevisionId', selectedRevisionId.trim())
+    const search = qp.toString()
+    const routeSuffix = search ? `?${search}` : ''
+
+    let openUrl = resolveAppHref('model-viewer')
+    if (search) openUrl += (openUrl.includes('?') ? '&' : '?') + search
+
+    const features = 'width=1280,height=800,left=80,top=80,resizable=yes,scrollbars=yes'
+    const w = window.open(openUrl, 'trimbleModelViewer', features)
+    const blocked = !w || (typeof w.closed === 'boolean' && w.closed)
+    if (blocked) {
+      if (
+        window.confirm(
+          '팝업이 차단되었거나 새 창을 열 수 없습니다.\n같은 탭에서 모델 뷰어(전체 화면)를 여시겠습니까?'
+        )
+      ) {
+        void navigate(`/model-viewer${routeSuffix}`)
+      }
+      return
+    }
+    try {
+      w.focus()
+    } catch {
+      /* ignore */
+    }
   }
 
   return (
@@ -150,88 +215,268 @@ export default function Layout() {
           </button>
         </div>
         <div className="sidebar__brand">
-          <NavLink to="/" className="sidebar__logo">
-            BRACE
+          <NavLink to="/dashboard" className="sidebar__logo" title="대시보드">
+            <span className="sidebar__icon" aria-hidden>
+              <IconHome />
+            </span>
+            <span className="sidebar__logo-text">BRACE</span>
           </NavLink>
         </div>
-        <nav className="sidebar__nav">
-          <div className={`sidebar__group ${projectMenuOpen ? 'sidebar__group--open' : ''}`}>
+        <div className="sidebar__context">
+          <div className="sidebar__project">
             <button
               type="button"
-              className={`sidebar__group-title ${isProjectMenuActive ? 'sidebar__link--active' : ''}`}
-              onClick={() => setProjectMenuOpen((v) => !v)}
-              aria-expanded={projectMenuOpen}
+              className="sidebar__project-btn"
+              onClick={() => setProjectPickerOpen(true)}
+              title="프로젝트 선택"
             >
-              <span className="sidebar__link-text">프로젝트 관리</span>
-              <span className="sidebar__group-chevron" aria-hidden>{projectMenuOpen ? '▼' : '▶'}</span>
+              <span className="sidebar__icon sidebar__project-btn-icon" aria-hidden>
+                <IconBriefcase />
+              </span>
+              <div className="sidebar__project-btn-texts">
+                <span className="sidebar__project-btn-label">프로젝트</span>
+                <span className="sidebar__project-btn-value" title={selectedProject ? `${selectedProject.code ?? ''} ${selectedProject.name}`.trim() : ''}>
+                  {selectedProject ? [selectedProject.code, selectedProject.name].filter(Boolean).join(' · ') || selectedProject.name : '선택하세요'}
+                </span>
+              </div>
             </button>
-            <div className="sidebar__group-items">
-              {projectSubMenus.map(({ path, label }) => (
-                <NavLink
-                  key={path}
-                  to={path}
-                  className={({ isActive }) => `sidebar__link sidebar__link--sub ${isActive ? 'sidebar__link--active' : ''}`}
-                  end={path === '/projects'}
-                >
-                  <span className="sidebar__link-text">{label}</span>
-                </NavLink>
-              ))}
-            </div>
           </div>
+          {selectedProject && (
+            <div className="sidebar__schedule">
+              <div className="sidebar__schedule-field">
+                <label className="sidebar__schedule-label" htmlFor="sidebar-phase">
+                  설계 차수
+                </label>
+                <select
+                  id="sidebar-phase"
+                  className="sidebar__schedule-select"
+                  value={selectedPhaseId}
+                  onChange={(e) => setSelectedPhaseId(e.target.value)}
+                  disabled={loadingPhases}
+                >
+                  <option value="">선택하세요</option>
+                  {phases.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="sidebar__schedule-field">
+                <label className="sidebar__schedule-label" htmlFor="sidebar-revision">
+                  리비전
+                </label>
+                <select
+                  id="sidebar-revision"
+                  className="sidebar__schedule-select"
+                  value={selectedRevisionId}
+                  onChange={(e) => setSelectedRevisionId(e.target.value)}
+                  disabled={!selectedPhaseId}
+                >
+                  <option value="">선택하세요</option>
+                  {revisions.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.revision_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+        </div>
+        <nav className="sidebar__nav">
+          <NavLink
+            to="/dashboard"
+            className={({ isActive }) => `sidebar__link ${isActive ? 'sidebar__link--active' : ''}`}
+            title="대시보드"
+          >
+            <span className="sidebar__icon" aria-hidden>
+              <IconBarChart />
+            </span>
+            <span className="sidebar__link-text">대시보드</span>
+          </NavLink>
+          <button
+            type="button"
+            className="sidebar__link"
+            onClick={() => openModelViewerInNewWindow()}
+            title="모델 뷰어를 새 창에서 엽니다 (Trimble Connect)"
+          >
+            <span className="sidebar__icon" aria-hidden>
+              <IconViewer3D />
+            </span>
+            <span className="sidebar__link-text">모델 뷰어</span>
+          </button>
+          {showProjectMgmt && (
+            <div className={`sidebar__group ${projectMenuOpen ? 'sidebar__group--open' : ''}`}>
+              <button
+                type="button"
+                className={`sidebar__group-title ${isProjectMenuActive ? 'sidebar__link--active' : ''}`}
+                onClick={() => setProjectMenuOpen((v) => !v)}
+                aria-expanded={projectMenuOpen}
+                title="프로젝트 관리"
+              >
+                <span className="sidebar__group-title-start">
+                  <span className="sidebar__icon" aria-hidden>
+                    <IconFolderKanban />
+                  </span>
+                  <span className="sidebar__link-text">프로젝트 관리</span>
+                </span>
+                <span className="sidebar__group-chevron" aria-hidden>{projectMenuOpen ? '▼' : '▶'}</span>
+              </button>
+              <div className="sidebar__group-items">
+                {projectSubMenus.map(({ path, label, Icon }) => (
+                  <NavLink
+                    key={path}
+                    to={path}
+                    className={({ isActive }) => `sidebar__link sidebar__link--sub ${isActive ? 'sidebar__link--active' : ''}`}
+                    end={path === '/projects'}
+                    title={label}
+                  >
+                    <span className="sidebar__icon" aria-hidden>
+                      <Icon />
+                    </span>
+                    <span className="sidebar__link-text">{label}</span>
+                  </NavLink>
+                ))}
+              </div>
+            </div>
+          )}
           <div className={`sidebar__group ${designMenuOpen ? 'sidebar__group--open' : ''}`}>
             <button
               type="button"
               className={`sidebar__group-title ${isDesignActive ? 'sidebar__link--active' : ''}`}
               onClick={() => setDesignMenuOpen((v) => !v)}
               aria-expanded={designMenuOpen}
+              title="설계 관리"
             >
-              <span className="sidebar__link-text">설계 관리</span>
+              <span className="sidebar__group-title-start">
+                <span className="sidebar__icon" aria-hidden>
+                  <IconDrafting />
+                </span>
+                <span className="sidebar__link-text">설계 관리</span>
+              </span>
               <span className="sidebar__group-chevron" aria-hidden>{designMenuOpen ? '▼' : '▶'}</span>
             </button>
             <div className="sidebar__group-items">
-              {designSubMenus.map(({ path, label }) => (
+              {designSubMenus.map(({ path, label, Icon }) => (
                 <NavLink
                   key={path}
                   to={path}
                   className={({ isActive }) => `sidebar__link sidebar__link--sub ${isActive ? 'sidebar__link--active' : ''}`}
                   end={false}
+                  title={label}
                 >
+                  <span className="sidebar__icon" aria-hidden>
+                    <Icon />
+                  </span>
                   <span className="sidebar__link-text">{label}</span>
                 </NavLink>
               ))}
             </div>
           </div>
+          <div className={`sidebar__group ${modelMenuOpen ? 'sidebar__group--open' : ''}`}>
+            <button
+              type="button"
+              className={`sidebar__group-title ${isModelMenuActiveWithViewer ? 'sidebar__link--active' : ''}`}
+              onClick={() => setModelMenuOpen((v) => !v)}
+              aria-expanded={modelMenuOpen}
+              title="모델 관리"
+            >
+              <span className="sidebar__group-title-start">
+                <span className="sidebar__icon" aria-hidden>
+                  <IconBox />
+                </span>
+                <span className="sidebar__link-text">모델 관리</span>
+              </span>
+              <span className="sidebar__group-chevron" aria-hidden>{modelMenuOpen ? '▼' : '▶'}</span>
+            </button>
+            <div className="sidebar__group-items">
+              {modelSubMenus.map((item) => {
+                const SubIcon = item.Icon
+                return (
+                  <NavLink
+                    key={item.path}
+                    to={item.path}
+                    className={({ isActive }) => `sidebar__link sidebar__link--sub ${isActive ? 'sidebar__link--active' : ''}`}
+                    end={item.end}
+                    title={item.label}
+                  >
+                    <span className="sidebar__icon" aria-hidden>
+                      <SubIcon />
+                    </span>
+                    <span className="sidebar__link-text">{item.label}</span>
+                  </NavLink>
+                )
+              })}
+            </div>
+          </div>
+          <NavLink
+            to="/code-mgmt"
+            className={({ isActive }) => `sidebar__link ${isActive ? 'sidebar__link--active' : ''}`}
+            title="코드관리 (분류체계·구성코드)"
+          >
+            <span className="sidebar__icon" aria-hidden>
+              <IconCode />
+            </span>
+            <span className="sidebar__link-text">코드관리</span>
+          </NavLink>
+          <NavLink
+            to="/settings"
+            className={({ isActive }) => `sidebar__link ${isActive ? 'sidebar__link--active' : ''}`}
+            title="코드 맵핑·철근 DB 등 전체 설정"
+          >
+            <span className="sidebar__icon" aria-hidden>
+              <IconSettings />
+            </span>
+            <span className="sidebar__link-text">설정</span>
+          </NavLink>
           <div className={`sidebar__group ${quantityMenuOpen ? 'sidebar__group--open' : ''}`}>
             <button
               type="button"
               className={`sidebar__group-title ${isQuantityMenuActive ? 'sidebar__link--active' : ''}`}
               onClick={() => setQuantityMenuOpen((v) => !v)}
               aria-expanded={quantityMenuOpen}
+              title="물량 관리"
             >
-              <span className="sidebar__link-text">물량 관리</span>
+              <span className="sidebar__group-title-start">
+                <span className="sidebar__icon" aria-hidden>
+                  <IconTable />
+                </span>
+                <span className="sidebar__link-text">물량 관리</span>
+              </span>
               <span className="sidebar__group-chevron" aria-hidden>{quantityMenuOpen ? '▼' : '▶'}</span>
             </button>
             <div className="sidebar__group-items">
-              {quantitySubMenus.map(({ path, label }) => (
+              {quantitySubMenus.map(({ path, label, Icon }) => (
                 <NavLink
                   key={path}
                   to={path}
                   className={({ isActive }) => `sidebar__link sidebar__link--sub ${isActive ? 'sidebar__link--active' : ''}`}
                   end={path === '/quantity'}
+                  title={label}
                 >
+                  <span className="sidebar__icon" aria-hidden>
+                    <Icon />
+                  </span>
                   <span className="sidebar__link-text">{label}</span>
                 </NavLink>
               ))}
             </div>
           </div>
 
-          <NavLink
-            to="/users"
-            className={({ isActive }) => `sidebar__link ${isActive ? 'sidebar__link--active' : ''}`}
-            end={false}
-          >
-            <span className="sidebar__link-text">사용자 관리</span>
-          </NavLink>
+          {showUserMgmt && (
+            <NavLink
+              to="/users"
+              className={({ isActive }) => `sidebar__link ${isActive ? 'sidebar__link--active' : ''}`}
+              end={false}
+              title="사용자 관리"
+            >
+              <span className="sidebar__icon" aria-hidden>
+                <IconUserCog />
+              </span>
+              <span className="sidebar__link-text">사용자 관리</span>
+            </NavLink>
+          )}
         </nav>
         <div className="sidebar__foot">
           <div className="sidebar__auth">
@@ -243,89 +488,80 @@ export default function Layout() {
                     <span className="sidebar__user-role">{user.role}</span>
                   )}
                 </div>
-                <NavLink to="/profile" className="sidebar__auth-link">
-                  내 정보
+                <NavLink to="/profile" className="sidebar__auth-link" title="내 정보">
+                  <span className="sidebar__icon" aria-hidden>
+                    <IconUser />
+                  </span>
+                  <span className="sidebar__link-text">내 정보</span>
                 </NavLink>
-                <button type="button" className="sidebar__auth-btn" onClick={handleLogout}>
-                  로그아웃
+                <button type="button" className="sidebar__auth-btn" onClick={handleLogout} title="로그아웃">
+                  <span className="sidebar__icon" aria-hidden>
+                    <IconLogOut />
+                  </span>
+                  <span className="sidebar__link-text">로그아웃</span>
                 </button>
               </>
             ) : (
-              <NavLink to="/login" className="sidebar__auth-link">
-                로그인
+              <NavLink to="/login" className="sidebar__auth-link" title="로그인">
+                <span className="sidebar__icon" aria-hidden>
+                  <IconUser />
+                </span>
+                <span className="sidebar__link-text">로그인</span>
               </NavLink>
             )}
           </div>
         </div>
       </aside>
       <div className="app__body">
-        <header className="main__header">
-          <div className="main__header-top">
-            <div className="main__header-project">
-              <button
-                type="button"
-                className="btn btn--secondary main__header-project-btn"
-                onClick={() => setProjectPickerOpen(true)}
-              >
-                프로젝트 선택
-              </button>
-              {selectedProject && (
-                <span className="main__header-project-name" title={`${selectedProject.code ?? ''} ${selectedProject.name}`.trim()}>
-                  {[selectedProject.code, selectedProject.name].filter(Boolean).join(' · ')}
-                </span>
-              )}
+        {!selectedProject && (
+          <header className="main__header main__header--hint" role="status">
+            <div className="main__header-top">
+              <p className="main__header-hint">
+                왼쪽 메뉴에서 <strong>프로젝트</strong>를 선택한 뒤 이용할 수 있습니다.
+              </p>
             </div>
-            {selectedProject && (
-              <>
-                <button
-                  type="button"
-                  className="btn btn--secondary main__header-btn"
-                  onClick={openModelViewerInNewWindow}
-                  title="모델 뷰어를 새 창으로 열기 (창 이동 가능)"
-                >
-                  모델뷰어
-                </button>
-                <div className="main__header-design-doc">
-                <span className="main__header-label" id="header-phase-label">설계 차수</span>
-                <select
-                  id="header-phase"
-                  className="main__header-select"
-                  value={selectedPhaseId}
-                  onChange={(e) => setSelectedPhaseId(e.target.value)}
-                  disabled={loadingPhases}
-                  aria-labelledby="header-phase-label"
-                >
-                  <option value="">선택하세요</option>
-                  {phases.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-                <span className="main__header-label" id="header-revision-label">리비전</span>
-                <select
-                  id="header-revision"
-                  className="main__header-select"
-                  value={selectedRevisionId}
-                  onChange={(e) => setSelectedRevisionId(e.target.value)}
-                  disabled={!selectedPhaseId}
-                  aria-labelledby="header-revision-label"
-                >
-                  <option value="">선택하세요</option>
-                  {revisions.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.revision_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              </>
-            )}
+          </header>
+        )}
+        <div className="app-topbar">
+          <Breadcrumb />
+          <div className="app-topbar__end">
+            {user ? (
+              <NavLink to="/profile" className="app-topbar__user" title="내 정보">
+                <div className="app-topbar__user-text">
+                  <span className="app-topbar__user-name">{user.name?.trim() || user.email?.trim() || '사용자'}</span>
+                  {user.role ? <span className="app-topbar__user-role">{user.role}</span> : null}
+                </div>
+                <span className="app-topbar__avatar" aria-hidden>
+                  {(user.name?.trim() || user.email?.trim() || '?').slice(0, 1).toUpperCase()}
+                </span>
+              </NavLink>
+            ) : null}
+            <ThemeToggle />
           </div>
-        </header>
-        <Breadcrumb />
+        </div>
         <main className="main">
-          <div className={`main__fill${location.pathname.startsWith('/quantity/summary') ? ' main__fill--quantity-summary' : ''}`}>
+          <div
+            className={[
+              'main__fill',
+              location.pathname.startsWith('/quantity/summary') ? 'main__fill--quantity-summary' : '',
+              /\/quantity\/?$/.test(location.pathname) ? 'main__fill--quantity-dock' : '',
+              location.pathname === '/trimble-viewer' || location.pathname.endsWith('/trimble-viewer')
+                ? 'main__fill--trimble-viewer'
+                : '',
+              location.pathname === '/dashboard' ? 'main__fill--dashboard' : '',
+              location.pathname.startsWith('/design-model') ||
+              location.pathname.startsWith('/settings') ||
+              location.pathname.startsWith('/code-mgmt') ||
+              location.pathname.startsWith('/projects') ||
+              location.pathname.startsWith('/design-schedule') ||
+              location.pathname.startsWith('/design-doc') ||
+              location.pathname.startsWith('/design-review')
+                ? 'main__fill--dock'
+                : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+          >
             <Outlet />
           </div>
         </main>

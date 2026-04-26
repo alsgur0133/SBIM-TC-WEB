@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, Fragment } from 'react'
+import { useState, useEffect, useCallback, Fragment, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useProject } from '../contexts/ProjectContext'
+import { useDesignSchedule } from '../contexts/DesignScheduleContext'
 import {
   getPhasesApi,
   createPhaseApi,
@@ -14,17 +15,36 @@ import {
   type DesignPhase,
   type DesignRevision,
 } from '../api/designSchedule'
+import DesignMgmtPageShell from '../components/DesignMgmtPageShell'
 
 function formatDate(s: string | null) {
   if (!s) return '-'
   return s.slice(0, 10)
 }
 
+/** Trimble 토큰 갱신이 걸리면 저장 버튼이 무응답처럼 보이므로 상한 시간 후 기존 토큰으로 진행 */
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(fallback), ms)
+    promise.then(
+      (v) => {
+        clearTimeout(t)
+        resolve(v)
+      },
+      () => {
+        clearTimeout(t)
+        resolve(fallback)
+      }
+    )
+  })
+}
+
 const REVISION_STATUS_OPTIONS = ['예정', '진행중', '완료', '보류']
 
 export default function DesignSchedule() {
-  const { user } = useAuth()
+  const { user, trimbleTokens, refreshTrimbleAccessToken } = useAuth()
   const { selectedProject } = useProject()
+  const { fetchPhases: syncScheduleToHeader, fetchRevisions: syncRevisionsToHeader } = useDesignSchedule()
   const [phases, setPhases] = useState<DesignPhase[]>([])
   const [revisionsByPhase, setRevisionsByPhase] = useState<Record<string, DesignRevision[]>>({})
   const [expandedPhaseIds, setExpandedPhaseIds] = useState<Set<string>>(new Set())
@@ -33,7 +53,7 @@ export default function DesignSchedule() {
   const [phaseModalOpen, setPhaseModalOpen] = useState(false)
   const [editingPhase, setEditingPhase] = useState<DesignPhase | null>(null)
   const [phaseFormName, setPhaseFormName] = useState('')
-  const [phaseFormOrder, setPhaseFormOrder] = useState(0)
+  const [folderSyncNotice, setFolderSyncNotice] = useState('')
   const [revisionModalOpen, setRevisionModalOpen] = useState(false)
   const [editingRevision, setEditingRevision] = useState<DesignRevision | null>(null)
   const [revisionPhaseId, setRevisionPhaseId] = useState<string | null>(null)
@@ -52,6 +72,27 @@ export default function DesignSchedule() {
 
   const canManage = user?.role === '프로젝트 관리자' || user?.role === '관리자'
   const totalSelected = selectedPhaseIds.size + selectedRevisionIds.size
+
+  const scheduleKpis = useMemo(() => {
+    if (!selectedProject) return []
+    let revTotal = 0
+    let revProg = 0
+    let revDone = 0
+    for (const p of phases) {
+      for (const r of revisionsByPhase[p.id] || []) {
+        revTotal++
+        const st = (r.status || '').trim()
+        if (st.includes('진행')) revProg++
+        if (st.includes('완')) revDone++
+      }
+    }
+    return [
+      { label: '설계 차수', value: phases.length, sub: '등록된 Phase', badge: 'Phase', badgeVariant: 'info' as const },
+      { label: '리비전', value: revTotal, sub: '전체 합계', badge: 'Total', badgeVariant: 'neutral' as const },
+      { label: '진행 중', value: revProg, sub: '상태 기준', badge: revProg ? 'Active' : '—', badgeVariant: revProg ? ('success' as const) : ('neutral' as const) },
+      { label: '완료', value: revDone, sub: '완료·완납', badge: 'On Track', badgeVariant: 'success' as const },
+    ]
+  }, [selectedProject, phases, revisionsByPhase])
 
   function normalizeError(msg: string): string {
     if (!msg) return '요청을 처리할 수 없습니다.'
@@ -100,17 +141,17 @@ export default function DesignSchedule() {
 
   function openPhaseCreate() {
     setError('')
+    setFolderSyncNotice('')
     setEditingPhase(null)
     setPhaseFormName('')
-    setPhaseFormOrder(phases.length)
     setPhaseModalOpen(true)
   }
 
   function openPhaseEdit(p: DesignPhase) {
     setError('')
+    setFolderSyncNotice('')
     setEditingPhase(p)
     setPhaseFormName(p.name)
-    setPhaseFormOrder(p.sort_order)
     setPhaseModalOpen(true)
   }
 
@@ -132,24 +173,64 @@ export default function DesignSchedule() {
     }
     setError('')
     setSaving(true)
-    const promise = editingPhase
-      ? updatePhaseApi(user.email, editingPhase.id, name, phaseFormOrder, selectedProject.id)
-      : createPhaseApi(user.email, name, phaseFormOrder, selectedProject.id)
-    promise
-      .then((res) => {
-        if (res.success && res.phase) {
-          if (editingPhase) {
-            setPhases((prev) => prev.map((p) => (p.id === res.phase!.id ? res.phase! : p)))
-          } else {
-            setPhases((prev) => [res.phase!, ...prev])
+    void (async () => {
+      const trimbleTok = await withTimeout(
+        (async () => {
+          try {
+            const refreshed = await refreshTrimbleAccessToken({ force: false })
+            return refreshed?.accessToken || trimbleTokens?.accessToken
+          } catch {
+            return trimbleTokens?.accessToken
           }
+        })(),
+        8000,
+        trimbleTokens?.accessToken
+      )
+      const promise = editingPhase
+        ? updatePhaseApi(user.email, editingPhase.id, name, editingPhase.sort_order, selectedProject.id, trimbleTok)
+        : createPhaseApi(user.email, name, selectedProject.id, trimbleTok)
+      try {
+        const res = await promise
+        if (res.success && res.phase) {
+          const sortPhases = (list: DesignPhase[]) =>
+            [...list].sort(
+              (a, b) =>
+                (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
+                String(a.created_at).localeCompare(String(b.created_at))
+            )
+          if (editingPhase) {
+            setPhases((prev) => sortPhases(prev.map((p) => (p.id === res.phase!.id ? res.phase! : p))))
+          } else {
+            setPhases((prev) => sortPhases([...prev, res.phase!]))
+          }
+          syncScheduleToHeader()
           closePhaseModal()
+          const tf = res.trimbleFolders
+          if (tf && 'ok' in tf && tf.ok === true && 'path' in tf) {
+            setError('')
+            if ('renamed' in tf && tf.renamed) {
+              setFolderSyncNotice(`Trimble Connect 폴더 이름을 변경했습니다: ${tf.path}`)
+            } else {
+              setFolderSyncNotice(`Trimble Connect에 폴더를 준비했습니다: ${tf.path}`)
+            }
+          } else if (tf && 'skipped' in tf && tf.skipped && tf.hint) {
+            setError('')
+            setFolderSyncNotice(tf.hint)
+          } else if (tf && 'ok' in tf && tf.ok === false && 'error' in tf) {
+            setFolderSyncNotice('')
+            setError(`저장은 완료되었으나 Trimble Connect 폴더 동기화에 실패했습니다: ${tf.error}`)
+          } else {
+            setFolderSyncNotice('')
+          }
         } else {
           setError(normalizeError(res.error || '저장에 실패했습니다.'))
         }
-      })
-      .catch((err) => setError(normalizeError(err instanceof Error ? err.message : '저장에 실패했습니다.')))
-      .finally(() => setSaving(false))
+      } catch (err) {
+        setError(normalizeError(err instanceof Error ? err.message : '저장에 실패했습니다.'))
+      } finally {
+        setSaving(false)
+      }
+    })()
   }
 
   function confirmDeletePhase() {
@@ -157,9 +238,23 @@ export default function DesignSchedule() {
     const p = pendingDeletePhase
     setPendingDeletePhase(null)
     setError('')
+    setFolderSyncNotice('')
     setDeletingId(p.id)
-    deletePhaseApi(user.email, p.id)
-      .then((res) => {
+    void (async () => {
+      const trimbleTok = await withTimeout(
+        (async () => {
+          try {
+            const refreshed = await refreshTrimbleAccessToken({ force: false })
+            return refreshed?.accessToken || trimbleTokens?.accessToken
+          } catch {
+            return trimbleTokens?.accessToken
+          }
+        })(),
+        8000,
+        trimbleTokens?.accessToken
+      )
+      try {
+        const res = await deletePhaseApi(user.email, p.id, trimbleTok)
         if (res.success) {
           setPhases((prev) => prev.filter((x) => x.id !== p.id))
           setRevisionsByPhase((prev) => {
@@ -172,14 +267,27 @@ export default function DesignSchedule() {
             next.delete(p.id)
             return next
           })
+          syncScheduleToHeader()
+          const tf = res.trimbleFolders
+          if (tf && 'ok' in tf && tf.ok === false && 'error' in tf) {
+            setFolderSyncNotice(`Trimble Connect 폴더 삭제에 실패했습니다: ${tf.error}`)
+          } else if (tf && 'skipped' in tf && tf.skipped && tf.hint) {
+            setFolderSyncNotice(tf.hint)
+          } else if (tf && 'ok' in tf && tf.ok === true) {
+            setFolderSyncNotice('Trimble Connect에서 해당 폴더를 삭제했습니다.')
+          }
         } else setError(normalizeError(res.error || '삭제에 실패했습니다.'))
-      })
-      .catch((err) => setError(normalizeError(err instanceof Error ? err.message : '삭제에 실패했습니다.')))
-      .finally(() => setDeletingId(null))
+      } catch (err) {
+        setError(normalizeError(err instanceof Error ? err.message : '삭제에 실패했습니다.'))
+      } finally {
+        setDeletingId(null)
+      }
+    })()
   }
 
   function openRevisionCreate(phaseId: string) {
     setError('')
+    setFolderSyncNotice('')
     setRevisionPhaseId(phaseId)
     setEditingRevision(null)
     setRevFormName('')
@@ -192,6 +300,7 @@ export default function DesignSchedule() {
 
   function openRevisionEdit(r: DesignRevision) {
     setError('')
+    setFolderSyncNotice('')
     setRevisionPhaseId(r.design_phase_id)
     setEditingRevision(r)
     setRevFormName(r.revision_name)
@@ -217,11 +326,33 @@ export default function DesignSchedule() {
     if (!user?.email || !revisionPhaseId) return
     setError('')
     setSaving(true)
-    const promise = editingRevision
-      ? updateRevisionApi(user.email, editingRevision.id, name, revFormPlanned || undefined, revFormActual || undefined, revFormStatus, revFormMemo || undefined)
-      : createRevisionApi(user.email, revisionPhaseId, name, revFormPlanned || undefined, revFormActual || undefined, revFormStatus, revFormMemo || undefined)
-    promise
-      .then((res) => {
+    void (async () => {
+      const trimbleTok = await withTimeout(
+        (async () => {
+          try {
+            const refreshed = await refreshTrimbleAccessToken({ force: false })
+            return refreshed?.accessToken || trimbleTokens?.accessToken
+          } catch {
+            return trimbleTokens?.accessToken
+          }
+        })(),
+        8000,
+        trimbleTokens?.accessToken
+      )
+      const promise = editingRevision
+        ? updateRevisionApi(user.email, editingRevision.id, name, revFormPlanned || undefined, revFormActual || undefined, revFormStatus, revFormMemo || undefined, trimbleTok)
+        : createRevisionApi(
+            user.email,
+            revisionPhaseId,
+            name,
+            revFormPlanned || undefined,
+            revFormActual || undefined,
+            revFormStatus,
+            revFormMemo || undefined,
+            trimbleTok
+          )
+      try {
+        const res = await promise
         if (res.success && res.revision) {
           if (editingRevision) {
             setRevisionsByPhase((prev) => ({
@@ -236,11 +367,32 @@ export default function DesignSchedule() {
               [revisionPhaseId]: [res.revision!, ...(prev[revisionPhaseId] || [])],
             }))
           }
+          syncRevisionsToHeader(revisionPhaseId)
           closeRevisionModal()
+          const tf = res.trimbleFolders
+          if (tf && 'ok' in tf && tf.ok === true && 'path' in tf) {
+            setError('')
+            if ('renamed' in tf && tf.renamed) {
+              setFolderSyncNotice(`Trimble Connect 폴더 이름을 변경했습니다: ${tf.path}`)
+            } else {
+              setFolderSyncNotice(`Trimble Connect에 폴더를 준비했습니다: ${tf.path}`)
+            }
+          } else if (tf && 'skipped' in tf && tf.skipped && tf.hint) {
+            setError('')
+            setFolderSyncNotice(tf.hint)
+          } else if (tf && 'ok' in tf && tf.ok === false && 'error' in tf) {
+            setFolderSyncNotice('')
+            setError(`저장은 완료되었으나 Trimble Connect 폴더 동기화에 실패했습니다: ${tf.error}`)
+          } else {
+            setFolderSyncNotice('')
+          }
         } else setError(normalizeError(res.error || '저장에 실패했습니다.'))
-      })
-      .catch((err) => setError(normalizeError(err instanceof Error ? err.message : '저장에 실패했습니다.')))
-      .finally(() => setSaving(false))
+      } catch (err) {
+        setError(normalizeError(err instanceof Error ? err.message : '저장에 실패했습니다.'))
+      } finally {
+        setSaving(false)
+      }
+    })()
   }
 
   function confirmDeleteRevision() {
@@ -248,18 +400,44 @@ export default function DesignSchedule() {
     const r = pendingDeleteRevision
     setPendingDeleteRevision(null)
     setError('')
+    setFolderSyncNotice('')
     setDeletingId(r.id)
-    deleteRevisionApi(user.email, r.id)
-      .then((res) => {
+    void (async () => {
+      const trimbleTok = await withTimeout(
+        (async () => {
+          try {
+            const refreshed = await refreshTrimbleAccessToken({ force: false })
+            return refreshed?.accessToken || trimbleTokens?.accessToken
+          } catch {
+            return trimbleTokens?.accessToken
+          }
+        })(),
+        8000,
+        trimbleTokens?.accessToken
+      )
+      try {
+        const res = await deleteRevisionApi(user.email, r.id, trimbleTok)
         if (res.success) {
           setRevisionsByPhase((prev) => ({
             ...prev,
             [r.design_phase_id]: (prev[r.design_phase_id] || []).filter((x) => x.id !== r.id),
           }))
+          syncRevisionsToHeader(r.design_phase_id)
+          const tf = res.trimbleFolders
+          if (tf && 'ok' in tf && tf.ok === false && 'error' in tf) {
+            setFolderSyncNotice(`Trimble Connect 폴더 삭제에 실패했습니다: ${tf.error}`)
+          } else if (tf && 'skipped' in tf && tf.skipped && tf.hint) {
+            setFolderSyncNotice(tf.hint)
+          } else if (tf && 'ok' in tf && tf.ok === true) {
+            setFolderSyncNotice('Trimble Connect에서 해당 리비전 폴더를 삭제했습니다.')
+          }
         } else setError(normalizeError(res.error || '삭제에 실패했습니다.'))
-      })
-      .catch((err) => setError(normalizeError(err instanceof Error ? err.message : '삭제에 실패했습니다.')))
-      .finally(() => setDeletingId(null))
+      } catch (err) {
+        setError(normalizeError(err instanceof Error ? err.message : '삭제에 실패했습니다.'))
+      } finally {
+        setDeletingId(null)
+      }
+    })()
   }
 
   function toggleExpand(phaseId: string) {
@@ -333,22 +511,42 @@ export default function DesignSchedule() {
       .join(', ')
     if (!window.confirm(`선택한 항목(${msg})을 삭제하시겠습니까?`)) return
     setError('')
+    setFolderSyncNotice('')
     setBatchDeleting(true)
+    const trimbleTok = await withTimeout(
+      (async () => {
+        try {
+          const refreshed = await refreshTrimbleAccessToken({ force: false })
+          return refreshed?.accessToken || trimbleTokens?.accessToken
+        } catch {
+          return trimbleTokens?.accessToken
+        }
+      })(),
+      8000,
+      trimbleTokens?.accessToken
+    )
     const phaseIds = Array.from(selectedPhaseIds)
     const revisionIds = Array.from(selectedRevisionIds)
     const failed: string[] = []
+    let trimbleDeleteNote = ''
     for (const id of phaseIds) {
       try {
-        const res = await deletePhaseApi(user.email, id)
+        const res = await deletePhaseApi(user.email, id, trimbleTok)
         if (!res.success) failed.push(id)
+        else if (res.trimbleFolders && 'ok' in res.trimbleFolders && res.trimbleFolders.ok === false && 'error' in res.trimbleFolders) {
+          trimbleDeleteNote = String(res.trimbleFolders.error)
+        }
       } catch {
         failed.push(id)
       }
     }
     for (const id of revisionIds) {
       try {
-        const res = await deleteRevisionApi(user.email, id)
+        const res = await deleteRevisionApi(user.email, id, trimbleTok)
         if (!res.success) failed.push(id)
+        else if (res.trimbleFolders && 'ok' in res.trimbleFolders && res.trimbleFolders.ok === false && 'error' in res.trimbleFolders) {
+          trimbleDeleteNote = String(res.trimbleFolders.error)
+        }
       } catch {
         failed.push(id)
       }
@@ -357,19 +555,20 @@ export default function DesignSchedule() {
     setSelectedRevisionIds(new Set())
     setBatchDeleting(false)
     if (failed.length > 0) setError(`일부 삭제 실패: ${failed.length}건`)
+    else if (trimbleDeleteNote) setFolderSyncNotice(`Trimble Connect 폴더 삭제 참고: ${trimbleDeleteNote}`)
     fetchPhases()
+    syncScheduleToHeader()
   }
 
   if (!selectedProject) {
     return (
-      <div className="design-schedule">
-        <header className="project-mgmt__header">
-          <h1 className="project-mgmt__title">설계일정 관리</h1>
-          <p className="project-mgmt__desc">
-            설계차수를 등록하고, 각 차수별 리비전(Rev.0, Rev.1 등)을 관리할 수 있습니다.
-          </p>
-        </header>
-        <section className="card">
+      <DesignMgmtPageShell
+        title="설계일정 관리"
+        titleEn="Design Schedule"
+        description="설계차수를 등록하고, 각 차수별 리비전(Rev.0, Rev.1 등)을 관리할 수 있습니다."
+        kpis={[]}
+      >
+        <section className="card" style={{ margin: 0 }}>
           <p className="auth-form__error" style={{ marginTop: '0.5rem' }}>
             설계일정 관리는 <strong>프로젝트를 선택</strong>한 후 이용할 수 있습니다.
           </p>
@@ -379,55 +578,60 @@ export default function DesignSchedule() {
             </Link>
           </p>
         </section>
-      </div>
+      </DesignMgmtPageShell>
     )
   }
 
   return (
-    <div className="design-schedule">
-      <header className="project-mgmt__header">
-        <h1 className="project-mgmt__title">설계일정 관리</h1>
-        <p className="project-mgmt__desc">
-          설계차수를 등록하고, 각 차수별 리비전(Rev.0, Rev.1 등)을 관리할 수 있습니다.
-        </p>
-        <p style={{ color: 'var(--main-text-muted)', fontSize: '0.875rem', marginTop: '0.25rem' }}>
-          프로젝트: <strong>{selectedProject.name}</strong>
-        </p>
-        {user && !canManage && (
-          <p className="project-mgmt__hint">
-            생성·수정·삭제는 관리자 또는 프로젝트 관리자만 가능합니다. 역할 반영을 위해 로그아웃 후 다시 로그인하세요.
-          </p>
-        )}
-      </header>
-
-      <div className="project-mgmt__toolbar">
-        {canManage && (
+    <>
+      <DesignMgmtPageShell
+        title="설계일정 관리"
+        titleEn="Design Schedule"
+        description="설계차수를 등록하고, 각 차수별 리비전(Rev.0, Rev.1 등)을 관리할 수 있습니다."
+        kpis={scheduleKpis}
+        projectTag={
           <>
-            <button type="button" className="btn btn--primary" onClick={openPhaseCreate}>
-              설계차수 추가
-            </button>
-            {totalSelected > 0 && (
-              <button
-                type="button"
-                className="btn btn--danger"
-                onClick={batchDeleteSelected}
-                disabled={batchDeleting}
-              >
-                {batchDeleting ? '삭제 중…' : `선택 항목 일괄 삭제 (${totalSelected}건)`}
-              </button>
+            <p className="dm-shell__project-line">프로젝트: {selectedProject.name}</p>
+            {user && !canManage ? (
+              <p className="dm-shell__lead" style={{ marginTop: '0.35rem', fontSize: '0.8125rem' }}>
+                생성·수정·삭제는 관리자 또는 프로젝트 관리자만 가능합니다. 역할 반영을 위해 로그아웃 후 다시 로그인하세요.
+              </p>
+            ) : null}
+          </>
+        }
+        heroActions={
+          <>
+            {canManage && (
+              <>
+                <button type="button" className="dm-shell__btn-primary" onClick={openPhaseCreate}>
+                  + 설계차수 추가
+                </button>
+                {totalSelected > 0 ? (
+                  <button
+                    type="button"
+                    className="dm-shell__btn-danger-text"
+                    onClick={batchDeleteSelected}
+                    disabled={batchDeleting}
+                  >
+                    {batchDeleting ? '삭제 중…' : `선택 일괄 삭제 (${totalSelected}건)`}
+                  </button>
+                ) : null}
+              </>
             )}
           </>
-        )}
-        <button type="button" className="btn btn--secondary" onClick={fetchPhases} disabled={loading}>
-          새로고침
-        </button>
-      </div>
-
-      {error && <div className="auth-form__error">{error}</div>}
-      {loading ? (
-        <p className="project-mgmt__loading">설계차수 목록을 불러오는 중...</p>
-      ) : (
-        <div className="project-mgmt__table-wrap">
+        }
+        error={error || undefined}
+        notice={folderSyncNotice.trim() || undefined}
+        loading={loading}
+        loadingText="설계차수 목록을 불러오는 중…"
+        onRefresh={() => void fetchPhases()}
+        refreshDisabled={loading}
+      >
+        <div className="dm-shell__panel">
+          <div className="dm-shell__panel-head">
+            <h2 className="dm-shell__panel-title">차수 및 리비전</h2>
+          </div>
+        <div className="project-mgmt__table-wrap dm-shell__table-bleed">
           <table className="project-mgmt__table design-schedule__table">
             <thead>
               <tr>
@@ -603,7 +807,8 @@ export default function DesignSchedule() {
             </tbody>
           </table>
         </div>
-      )}
+        </div>
+      </DesignMgmtPageShell>
 
       {/* 설계차수 추가/수정 모달 */}
       {phaseModalOpen && (
@@ -620,14 +825,6 @@ export default function DesignSchedule() {
                 value={phaseFormName}
                 onChange={(e) => setPhaseFormName(e.target.value)}
                 placeholder="예: 1차 설계, 2차 설계"
-              />
-              <label className="project-mgmt__label">표시 순서</label>
-              <input
-                type="number"
-                className="project-mgmt__input"
-                min={0}
-                value={phaseFormOrder}
-                onChange={(e) => setPhaseFormOrder(Number(e.target.value) || 0)}
               />
             </div>
             <div className="modal__actions">
@@ -738,6 +935,6 @@ export default function DesignSchedule() {
           </div>
         </div>
       )}
-    </div>
+    </>
   )
 }

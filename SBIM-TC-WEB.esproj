@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.VisualStudio.JavaScript.Sdk">
+  <PropertyGroup>
+    <StartupCommand>npm run dev:all</StartupCommand>
+    <BuildCommand>npm run build</BuildCommand>
+    <WorkingDirectory>.</WorkingDirectory>
+  </PropertyGroup>
+</Project>

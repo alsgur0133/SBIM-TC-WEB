@@ -1,11 +1,4 @@
-const DEFAULT_API_ORIGIN = 'http://localhost:5001'
-const rawBase =
-  import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? DEFAULT_API_ORIGIN : DEFAULT_API_ORIGIN)
-// VITE_API_URL이 .../api 로 끝나면 중복 경로 방지를 위해 제거 (요청 path에 이미 /api 포함)
-const API_BASE =
-  typeof rawBase === 'string' && /\/api\/?$/i.test(rawBase)
-    ? rawBase.replace(/\/api\/?$/i, '')
-    : rawBase
+import { API_BASE } from './config'
 
 // ---------------------------------------------------------------------------
 // 타입 (서버 응답과 동일한 snake_case 필드 사용)
@@ -23,6 +16,8 @@ export interface Project {
   end_date?: string | null
   pm?: string | null
   status?: ProjectStatus | string | null
+  /** Trimble Connect 쪽 프로젝트 ID (연동 시) */
+  trimble_connect_project_id?: string | null
   created_at: string
   updated_at: string
 }
@@ -80,6 +75,136 @@ export async function getProjectsApi(): Promise<ProjectsListResponse> {
   return data as ProjectsListResponse
 }
 
+/** Trimble Connect — 현재 로그인 계정이 접근 가능한 프로젝트 목록 (기존 프로젝트 연결용) */
+export interface TrimbleConnectProjectSummary {
+  id: string
+  name: string
+  /** Trimble 리전 (asia, europe 등) — 여러 리전 목록 병합 시 표시용 */
+  tcRegion?: string
+}
+
+export async function fetchTrimbleConnectMyProjectsApi(
+  userEmail: string,
+  trimbleAccessToken: string
+): Promise<{ success: boolean; projects?: TrimbleConnectProjectSummary[]; error?: string }> {
+  try {
+    const data = await request<{
+      success: boolean
+      projects?: TrimbleConnectProjectSummary[]
+      error?: string
+    }>('/api/projects/trimble-my-projects', {
+      method: 'POST',
+      body: { userEmail, trimbleAccessToken: trimbleAccessToken.trim() },
+    })
+    if (!data.success && data.error) {
+      return { success: false, error: data.error }
+    }
+    return { success: true, projects: data.projects ?? [] }
+  } catch (e) {
+    return {
+      success: false,
+      error: e instanceof Error ? e.message : '목록을 불러오지 못했습니다.',
+    }
+  }
+}
+
+/** Trimble Connect 폴더 한 단계 자식 (탐색용) */
+export interface TrimbleBrowseItem {
+  id: string
+  name: string
+  kind: 'folder' | 'file'
+  versionId?: string
+}
+
+export async function browseTrimbleConnectFolderApi(
+  projectId: string,
+  userEmail: string,
+  trimbleAccessToken: string,
+  folderId?: string | null
+): Promise<{ success: true; rootFolderId: string; folderId: string; items: TrimbleBrowseItem[] }> {
+  const body: Record<string, unknown> = {
+    userEmail,
+    trimbleAccessToken: trimbleAccessToken.trim(),
+  }
+  if (folderId) body.folderId = folderId
+  const data = await request<{
+    success: boolean
+    rootFolderId?: string
+    folderId?: string
+    items?: TrimbleBrowseItem[]
+    error?: string
+  }>(`/api/projects/${encodeURIComponent(projectId)}/trimble-connect/browse-folder`, {
+    method: 'POST',
+    body,
+  })
+  if (!data.success || !data.rootFolderId || !data.folderId || !Array.isArray(data.items)) {
+    throw new Error(data.error || 'Connect 폴더 목록을 불러오지 못했습니다.')
+  }
+  return {
+    success: true,
+    rootFolderId: data.rootFolderId,
+    folderId: data.folderId,
+    items: data.items,
+  }
+}
+
+/** Connect → BRACE 파일 가져오기 API 응답 요약 */
+export interface TrimbleConnectImportSummary {
+  scanned: number
+  importedModels: number
+  importedDocs: number
+  importedQuantity: number
+  skipped: number
+  errors: number
+  failed: { name: string; error: string }[]
+}
+
+/**
+ * Trimble Connect에 연결된 프로젝트의 폴더/파일을 순회해 현재 설계 리비전에 모델·도서·(선택) 물량으로 등록
+ */
+export async function importTrimbleConnectFilesApi(
+  projectId: string,
+  userEmail: string,
+  trimbleAccessToken: string,
+  designRevisionId: string,
+  options?: {
+    importModels?: boolean
+    importDocuments?: boolean
+    importQuantity?: boolean
+    maxDepth?: number
+    maxFiles?: number
+    skipExisting?: boolean
+    /** 지정 시 전체 스캔 대신 이 파일만 가져옵니다(Connect 탐색기에서 선택). */
+    selectedFileEntries?: { id: string; name: string; versionId?: string; path?: string[] }[]
+  }
+): Promise<{ success: true; summary: TrimbleConnectImportSummary }> {
+  const o = options ?? {}
+  const data = await request<{ success: boolean; summary?: TrimbleConnectImportSummary; error?: string }>(
+    `/api/projects/${encodeURIComponent(projectId)}/trimble-connect/import-files`,
+    {
+      method: 'POST',
+      body: {
+        userEmail,
+        trimbleAccessToken: trimbleAccessToken.trim(),
+        designRevisionId,
+        importModels: o.importModels,
+        importDocuments: o.importDocuments,
+        importQuantity: o.importQuantity,
+        maxDepth: o.maxDepth,
+        maxFiles: o.maxFiles,
+        skipExisting: o.skipExisting,
+        ...(o.selectedFileEntries && o.selectedFileEntries.length > 0
+          ? { selectedFileEntries: o.selectedFileEntries }
+          : {}),
+      },
+    }
+  )
+  if (!data.success || !data.summary) {
+    throw new Error(data.error || 'Connect에서 파일을 가져오지 못했습니다.')
+  }
+  return { success: true, summary: data.summary }
+}
+
 /** 다음 프로젝트 코드 조회 (YYMM-NNN). 추가 팝업 미리보기용 */
 export async function getNextProjectCodeApi(): Promise<{ success: boolean; code?: string; error?: string }> {
   try {
@@ -104,27 +229,56 @@ export async function createProjectApi(
     pm?: string
     status?: ProjectStatus
     code?: string
+    /** Trimble Connect OAuth 액세스 토큰(있으면 Connect에 동일 이름 프로젝트 생성 시도) */
+    trimbleAccessToken?: string
+    /** false면 토큰이 있어도 Connect 연동 안 함 */
+    syncTrimbleConnect?: boolean
+    /** 이미 Connect에 있는 프로젝트 ID — 있으면 새로 만들지 않고 이 ID로만 연결 */
+    trimbleExistingProjectId?: string
   }
-): Promise<ProjectMutateResponse> {
+): Promise<
+  ProjectMutateResponse & {
+    trimbleConnectError?: string
+    trimbleAutoImport?: TrimbleConnectImportSummary
+    trimbleAutoImportError?: string
+  }
+> {
   const opts = options ?? {}
   try {
-    const data = await request<ProjectMutateResponse>('/api/projects', {
+    const body: Record<string, unknown> = {
+      userEmail,
+      name: name.trim(),
+      description: opts.description?.trim() ?? '',
+      client: opts.client ?? '',
+      start_date: opts.startDate ?? '',
+      end_date: opts.endDate ?? '',
+      pm: opts.pm ?? userEmail,
+      status: opts.status ?? '예정',
+      code: opts.code?.trim() ?? '',
+    }
+    if (opts.trimbleExistingProjectId?.trim()) {
+      body.trimbleExistingProjectId = opts.trimbleExistingProjectId.trim()
+    }
+    if (opts.trimbleAccessToken?.trim()) {
+      body.trimbleAccessToken = opts.trimbleAccessToken.trim()
+      if (opts.syncTrimbleConnect === false) body.syncTrimbleConnect = false
+    }
+    const data = await request<
+      ProjectMutateResponse & {
+        trimbleConnectError?: string
+        trimbleAutoImport?: TrimbleConnectImportSummary
+        trimbleAutoImportError?: string
+      }
+    >('/api/projects', {
       method: 'POST',
-      body: {
-        userEmail,
-        name: name.trim(),
-        description: opts.description?.trim() ?? '',
-        client: opts.client ?? '',
-        start_date: opts.startDate ?? '',
-        end_date: opts.endDate ?? '',
-        pm: opts.pm ?? userEmail,
-        status: opts.status ?? '예정',
-        code: opts.code?.trim() ?? '',
-      },
+      body,
     })
     return {
       success: true,
       project: data.project,
+      trimbleConnectError: data.trimbleConnectError,
+      trimbleAutoImport: data.trimbleAutoImport,
+      trimbleAutoImportError: data.trimbleAutoImportError,
     }
   } catch (e) {
     return {
@@ -233,12 +387,23 @@ export async function getProjectParticipantsApi(
   return data as ProjectParticipantsResponse
 }
 
+export interface TrimbleConnectInviteResult {
+  ok?: boolean
+  invited?: number
+  error?: string
+  skipped?: boolean
+  reason?: string
+  partialErrors?: string[]
+  via?: string
+}
+
 export async function addProjectParticipantsApi(
   projectId: string,
   userEmail: string,
   userIds: string[],
-  roleInProject?: string
-): Promise<ProjectParticipantsResponse> {
+  roleInProject?: string,
+  options?: { trimbleAccessToken?: string; syncTrimbleConnect?: boolean }
+): Promise<ProjectParticipantsResponse & { trimbleConnectInvite?: TrimbleConnectInviteResult }> {
   if (!projectId || !userEmail) {
     return {
       success: false,
@@ -247,11 +412,23 @@ export async function addProjectParticipantsApi(
   }
   try {
     const path = `/api/projects/${encodeURIComponent(projectId)}/participants`
-    const data = await request<ProjectParticipantsResponse>(path, {
-      method: 'POST',
-      body: { userEmail, userIds, roleInProject: roleInProject ?? '참여자' },
-    })
-    return data as ProjectParticipantsResponse
+    const body: Record<string, unknown> = {
+      userEmail,
+      userIds,
+      roleInProject: roleInProject ?? '참여자',
+    }
+    if (options?.trimbleAccessToken?.trim()) {
+      body.trimbleAccessToken = options.trimbleAccessToken.trim()
+      if (options.syncTrimbleConnect === false) body.syncTrimbleConnect = false
+    }
+    const data = await request<ProjectParticipantsResponse & { trimbleConnectInvite?: TrimbleConnectInviteResult }>(
+      path,
+      {
+        method: 'POST',
+        body,
+      }
+    )
+    return data as ProjectParticipantsResponse & { trimbleConnectInvite?: TrimbleConnectInviteResult }
   } catch (e) {
     return {
       success: false,

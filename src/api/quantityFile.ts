@@ -1,5 +1,4 @@
-const API_BASE =
-  import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? '' : 'http://localhost:5001')
+import { API_BASE } from './config'
 
 export interface QuantityFile {
   id: string
@@ -25,6 +24,11 @@ export interface QuantityFileItem {
   result_value: string | null
   item_type: string | null
   guid: string | null
+}
+
+/** GET /api/quantity-revision/items — 소속 물량파일 제목 포함 */
+export interface QuantityRevisionItem extends QuantityFileItem {
+  file_title: string
 }
 
 interface FileItemsResponse {
@@ -100,6 +104,26 @@ async function del(path: string): Promise<{ success: boolean; error?: string; me
   return data as { success: boolean; error?: string; message?: string }
 }
 
+async function postJson<T>(path: string, body: object): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const text = await res.text()
+  let data: unknown = {}
+  try {
+    data = text ? JSON.parse(text) : {}
+  } catch {
+    // ignore
+  }
+  if (!res.ok) {
+    const err = data as { error?: string }
+    throw new Error(err.error || `요청에 실패했습니다. (${res.status})`)
+  }
+  return data as T
+}
+
 function toBase64Utf8(s: string): string {
   try {
     const bytes = new TextEncoder().encode(s)
@@ -121,6 +145,87 @@ export async function getQuantityFilesApi(designRevisionId: string): Promise<Fil
   )
 }
 
+export interface QuantityRevisionStats {
+  success: boolean
+  fileCount: number
+  itemCount: number
+  byFile: { id: string; title: string; itemCount: number }[]
+}
+
+export async function getQuantityRevisionStatsApi(designRevisionId: string): Promise<QuantityRevisionStats> {
+  return get<QuantityRevisionStats>(
+    `/api/quantity-revision/stats?designRevisionId=${encodeURIComponent(designRevisionId)}`
+  )
+}
+
+export async function getQuantityRevisionItemsApi(
+  designRevisionId: string,
+  options?: {
+    quantityFileId?: string
+    search?: string
+    limit?: number
+    offset?: number
+  }
+): Promise<{ success: boolean; items: QuantityRevisionItem[]; total: number }> {
+  const q = new URLSearchParams({ designRevisionId })
+  if (options?.quantityFileId) q.set('quantityFileId', options.quantityFileId)
+  if (options?.search?.trim()) q.set('search', options.search.trim())
+  q.set('limit', String(options?.limit ?? 100))
+  q.set('offset', String(options?.offset ?? 0))
+  return get<{ success: boolean; items: QuantityRevisionItem[]; total: number }>(
+    `/api/quantity-revision/items?${q.toString()}`
+  )
+}
+
+/** 단일 물량파일 B.O.M 보기용: 페이지를 넘겨 전체 행 수집 */
+export async function getAllQuantityRevisionItemsApi(
+  designRevisionId: string,
+  quantityFileId: string,
+  options?: { search?: string }
+): Promise<{ items: QuantityRevisionItem[]; total: number }> {
+  const batch = 2000
+  let offset = 0
+  const items: QuantityRevisionItem[] = []
+  let total = 0
+  const search = options?.search?.trim()
+  for (;;) {
+    const res = await getQuantityRevisionItemsApi(designRevisionId, {
+      quantityFileId,
+      search,
+      limit: batch,
+      offset,
+    })
+    total = res.total
+    const chunk = res.items ?? []
+    items.push(...chunk)
+    if (chunk.length < batch || items.length >= total) break
+    offset += batch
+  }
+  return { items, total }
+}
+
+/** 구버전 API 전용: 파일별 items 전체 (file_title 주입) */
+export async function getAllQuantityFileItemsAsRevisionApi(
+  fileId: string,
+  fileTitle: string
+): Promise<QuantityRevisionItem[]> {
+  const batch = 2000
+  let offset = 0
+  const out: QuantityRevisionItem[] = []
+  let total = 0
+  for (;;) {
+    const res = await getQuantityFileItemsApi(fileId, { limit: batch, offset })
+    total = res.total ?? 0
+    const chunk = res.items ?? []
+    for (const it of chunk) {
+      out.push({ ...it, file_title: fileTitle })
+    }
+    if (chunk.length < batch || out.length >= total) break
+    offset += batch
+  }
+  return out
+}
+
 const DEFAULT_ITEMS_PAGE_SIZE = 200
 
 export async function getQuantityFileItemsApi(
@@ -132,6 +237,7 @@ export async function getQuantityFileItemsApi(
     floor?: string
     signType?: string
     signCode?: string
+    search?: string
   }
 ): Promise<FileItemsResponse> {
   const limit = options?.limit ?? DEFAULT_ITEMS_PAGE_SIZE
@@ -141,6 +247,7 @@ export async function getQuantityFileItemsApi(
   if (options?.floor?.trim()) q.set('floor', options.floor.trim())
   if (options?.signType?.trim()) q.set('signType', options.signType.trim())
   if (options?.signCode?.trim()) q.set('signCode', options.signCode.trim())
+  if (options?.search?.trim()) q.set('search', options.search.trim())
   return get<FileItemsResponse>(
     `/api/quantity-files/${encodeURIComponent(fileId)}/items?${q.toString()}`
   )
@@ -170,6 +277,59 @@ export async function reparseQuantityFileApi(
     throw new Error(err.error || `요청에 실패했습니다. (${res.status})`)
   }
   return data as { success: boolean; error?: string; items?: QuantityFileItem[]; message?: string }
+}
+
+export type QuantityFileItemInput = {
+  dong?: string | null
+  floor?: string | null
+  sign?: string | null
+  name?: string | null
+  spec?: string | null
+  formula?: string | null
+  result_value?: string | null
+  item_type?: string | null
+  guid?: string | null
+}
+
+export async function updateQuantityFileItemApi(
+  userEmail: string,
+  itemId: number,
+  fields: QuantityFileItemInput
+): Promise<{ success: boolean; item?: QuantityFileItem; error?: string }> {
+  return put<{ success: boolean; item?: QuantityFileItem; error?: string }>(
+    `/api/quantity-file-items/${encodeURIComponent(String(itemId))}`,
+    { userEmail, ...fields }
+  )
+}
+
+export async function deleteQuantityFileItemApi(
+  userEmail: string,
+  itemId: number
+): Promise<{ success: boolean; message?: string }> {
+  return del(
+    `/api/quantity-file-items/${encodeURIComponent(String(itemId))}?userEmail=${encodeURIComponent(userEmail)}`
+  )
+}
+
+export async function bulkDeleteQuantityFileItemsApi(
+  userEmail: string,
+  ids: number[]
+): Promise<{ success: boolean; deleted?: number; message?: string }> {
+  return postJson<{ success: boolean; deleted?: number; message?: string }>(
+    '/api/quantity-file-items/bulk-delete',
+    { userEmail, ids }
+  )
+}
+
+export async function createQuantityFileItemApi(
+  userEmail: string,
+  fileId: string,
+  fields: QuantityFileItemInput
+): Promise<{ success: boolean; item?: QuantityFileItem; error?: string }> {
+  return postJson<{ success: boolean; item?: QuantityFileItem; error?: string }>(
+    `/api/quantity-files/${encodeURIComponent(fileId)}/items`,
+    { userEmail, ...fields }
+  )
 }
 
 export async function createQuantityFileApi(
@@ -512,6 +672,30 @@ export async function createQuantityFloorApi(
   return data as { success: boolean; item?: QuantityFloor; error?: string }
 }
 
+export async function updateQuantityFloorApi(
+  userEmail: string,
+  id: number,
+  body: { floor_value: string }
+): Promise<{ success: boolean; item?: QuantityFloor; error?: string }> {
+  const res = await fetch(`${API_BASE}/api/quantity-floors/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userEmail, floor_value: body.floor_value.trim() }),
+  })
+  const text = await res.text()
+  let data: unknown = {}
+  try {
+    data = text ? JSON.parse(text) : {}
+  } catch {
+    // ignore
+  }
+  if (!res.ok) {
+    const err = data as { error?: string }
+    throw new Error(err.error || `요청에 실패했습니다. (${res.status})`)
+  }
+  return data as { success: boolean; item?: QuantityFloor; error?: string }
+}
+
 export async function deleteQuantityFloorApi(
   userEmail: string,
   id: number
@@ -578,6 +762,34 @@ export async function createQuantitySpecApi(
   return data as { success: boolean; item?: QuantitySpec; error?: string }
 }
 
+export async function updateQuantitySpecApi(
+  userEmail: string,
+  id: number,
+  body: { spec_value?: string; category?: string }
+): Promise<{ success: boolean; item?: QuantitySpec; error?: string }> {
+  const res = await fetch(`${API_BASE}/api/quantity-specs/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      userEmail,
+      ...(body.spec_value != null ? { spec_value: body.spec_value.trim() } : {}),
+      ...(body.category != null ? { category: body.category.trim() } : {}),
+    }),
+  })
+  const text = await res.text()
+  let data: unknown = {}
+  try {
+    data = text ? JSON.parse(text) : {}
+  } catch {
+    // ignore
+  }
+  if (!res.ok) {
+    const err = data as { error?: string }
+    throw new Error(err.error || `요청에 실패했습니다. (${res.status})`)
+  }
+  return data as { success: boolean; item?: QuantitySpec; error?: string }
+}
+
 export async function deleteQuantitySpecApi(
   userEmail: string,
   id: number
@@ -605,7 +817,12 @@ export interface QuantitySummaryItemTypeRow {
 export interface QuantitySummaryData {
   concrete: Record<string, number>
   formwork: Record<string, number>
+  /** 일반 철근 (부재유형에 구조/시공 미포함) */
   rebar: Record<string, number>
+  /** 부재유형에「구조」포함 시 */
+  rebarStructural?: Record<string, number>
+  /** 부재유형에「시공」포함 시 */
+  rebarConstruction?: Record<string, number>
 }
 
 export async function getQuantitySummaryApi(designRevisionId: string): Promise<{

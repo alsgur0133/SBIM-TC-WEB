@@ -3,7 +3,7 @@
 ## 1. DB (server/db.js)
 
 ### 1.1 개요
-- **엔진**: better-sqlite3, 단일 파일 `server/sbim-tc.db`
+- **엔진**: PostgreSQL (`DATABASE_URL`, `server/db-pg.js`)
 - **역할**: 스키마 생성·컬럼 추가(ALTER), 모듈은 `db` 객체만 export
 
 ### 1.2 테이블 구조

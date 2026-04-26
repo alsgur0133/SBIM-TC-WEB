@@ -1,6 +1,4 @@
-// 개발 시 VITE_API_URL 없으면 빈 문자열 → Vite 프록시(/api → 5001) 사용
-const API_BASE =
-  import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? '' : 'http://localhost:5001')
+import { API_BASE } from './config'
 
 export interface AuthUser {
   id: string
@@ -20,7 +18,7 @@ interface ApiResult<T> {
 interface PendingUsersResponse {
   success: boolean
   error?: string
-  users?: { id: string; name: string; email: string; created_at: string }[]
+  users?: { id: string; name: string; email: string; company?: string | null; created_at: string }[]
 }
 
 export interface ApiUserRow {
@@ -31,6 +29,8 @@ export interface ApiUserRow {
   is_admin: number
   role?: string
   company?: string | null
+  /** Trimble Identity subject (OAuth `sub`) — 가입 시 저장 */
+  trimble_subject_id?: string | null
   created_at: string
 }
 
@@ -77,10 +77,6 @@ async function post<T>(path: string, body: object): Promise<ApiResult<T>> {
   return request<T>(path, { method: 'POST', body: JSON.stringify(body) })
 }
 
-async function put<T>(path: string, body: object): Promise<ApiResult<T>> {
-  return request<T>(path, { method: 'PUT', body: JSON.stringify(body) })
-}
-
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { method: 'GET' })
   const text = await res.text()
@@ -119,7 +115,8 @@ export async function updateProfileApi(
   newPassword?: string,
   company?: string
 ): Promise<ApiResult<AuthUser>> {
-  return put<AuthUser>('/api/auth/profile', {
+  // POST: IIS 등에서 PUT이 405로 막힐 때 대비 (서버에 동일 핸들러 마운트)
+  return post<AuthUser>('/api/auth/profile/update', {
     email,
     name,
     currentPassword,
@@ -150,7 +147,7 @@ export async function updateUserApi(
   userId: string,
   data: { name: string; email: string; role: string; status: string; company?: string }
 ): Promise<ApiResult<unknown>> {
-  return put<unknown>(`/api/auth/users/${encodeURIComponent(userId)}`, {
+  return post<unknown>(`/api/auth/users/${encodeURIComponent(userId)}/update`, {
     adminEmail,
     name: data.name,
     email: data.email,
@@ -158,6 +155,54 @@ export async function updateUserApi(
     status: data.status,
     company: data.company ?? undefined,
   })
+}
+
+export interface CheckTrimbleUserResponse {
+  success: boolean
+  exists?: boolean
+  status?: '활성' | '승인대기'
+  user?: { id: string; name: string; email: string; role?: string; company?: string }
+  error?: string
+}
+
+export async function checkTrimbleUserApi(body: {
+  email: string
+  name: string
+  trimbleId: string
+}): Promise<CheckTrimbleUserResponse> {
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/trimble/check-user`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      const msg =
+        res.status === 404
+          ? '회원 확인 API를 찾을 수 없습니다. 터미널에서 API 서버(npm run server)를 재시작한 뒤 다시 Trimble 로그인해 주세요.'
+          : (data as { error?: string }).error || '확인에 실패했습니다.'
+      return { success: false, error: msg }
+    }
+    return data as CheckTrimbleUserResponse
+  } catch (err) {
+    const message =
+      err instanceof TypeError && err.message === 'Failed to fetch'
+        ? 'API 서버에 연결할 수 없습니다. 터미널에서 npm run server 를 실행한 뒤 다시 시도하세요.'
+        : err instanceof Error
+          ? err.message
+          : '확인에 실패했습니다.'
+    return { success: false, error: message }
+  }
+}
+
+export async function trimbleRegisterApi(body: {
+  email: string
+  name: string
+  company: string
+  trimbleId: string
+}): Promise<ApiResult<unknown>> {
+  return post<unknown>('/api/auth/trimble/register', body)
 }
 
 export async function deleteUserApi(

@@ -1,7 +1,4 @@
-const API_BASE =
-  import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? '' : 'http://localhost:5001')
-const API_SERVER_ORIGIN =
-  import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://127.0.0.1:5001' : 'http://localhost:5001')
+import { API_BASE, API_SERVER_ORIGIN } from './config'
 
 export interface DesignDocument {
   id: string

@@ -5,13 +5,26 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "vite build",
+    "build:check": "tsc -b && vite build",
     "preview": "vite preview",
     "server": "node server/index.js",
     "seed:test1": "node server/seed-test-user.js",
     "seed:project-manager": "node server/seed-project-manager.js",
+    "db:dump": "node scripts/pg-dump.cjs",
     "dev:all": "concurrently \"npm run server\" \"npm run dev\"",
-    "postinstall": "node scripts/patch-web-ifc-three.js"
+    "postinstall": "node scripts/patch-web-ifc-three.js",
+    "rebuild:server": "cd server && npm install && npm rebuild && cd ..",
+    "build:all": "npm run build && cd server && npm install --omit=dev && cd ..",
+    "start:prod": "node server/index.js",
+    "prepare-publish-iis": "node scripts/prepare-publish-iis.cjs",
+    "build:iis": "node scripts/build-for-iis.cjs && node scripts/prepare-publish-iis.cjs",
+    "deploy:iis": "npm run build:iis",
+    "deploy:iis:root": "node scripts/deploy-iis-root.cjs",
+    "deploy:iis:server": "node scripts/deploy-iis-to-server.cjs",
+    "build:nginx": "node scripts/build-for-nginx.cjs",
+    "prepare-publish-nginx": "node scripts/prepare-publish-nginx.cjs",
+    "deploy:nginx": "npm run build:nginx && npm run prepare-publish-nginx"
   },
   "dependencies": {
     "dxf-parser": "^1.1.2",
@@ -24,6 +37,7 @@
     "react-router-dom": "^6.21.1",
     "recharts": "^3.7.0",
     "three": "^0.149.0",
+    "trimble-connect-workspace-api": "^0.3.34",
     "web-ifc": "^0.0.39",
     "web-ifc-three": "^0.0.126",
     "xlsx": "^0.18.5"
