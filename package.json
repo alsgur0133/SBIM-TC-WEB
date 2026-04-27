@@ -24,7 +24,8 @@
     "deploy:iis:server": "node scripts/deploy-iis-to-server.cjs",
     "build:nginx": "node scripts/build-for-nginx.cjs",
     "prepare-publish-nginx": "node scripts/prepare-publish-nginx.cjs",
-    "deploy:nginx": "npm run build:nginx && npm run prepare-publish-nginx"
+    "deploy:nginx": "npm run build:nginx && npm run prepare-publish-nginx",
+    "git:upload": "node scripts/git-upload-all.cjs"
   },
   "dependencies": {
     "dxf-parser": "^1.1.2",
