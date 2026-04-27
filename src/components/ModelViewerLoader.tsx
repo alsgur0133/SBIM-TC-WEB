@@ -12,16 +12,9 @@ export interface ModelViewerLoaderProps {
   designRevisionId?: string | null
 }
 
-function isLocalDevHost(): boolean {
-  if (typeof window === 'undefined') return false
-  const h = window.location.hostname
-  return h === 'localhost' || h === '127.0.0.1' || h === '::1'
-}
-
 /**
- * 기본: 배포/HTTPS는 Trimble Connect 3D 임베드, 로컬 개발은 안정적인 IFC 뷰어.
- * - 로컬에서 Trimble 임베드를 강제로 쓰려면 `?viewer=trimble`
- * - BRACE에 올린 IFC만 보려면 `?viewer=ifc`
+ * 기본: Trimble Connect 3D 임베드 뷰어.
+ * BRACE에 올린 IFC만 보려면 주소에 `?viewer=ifc` (또는 `&viewer=ifc`)를 붙이세요.
  */
 export default function ModelViewerLoader({
   embedded,
@@ -34,11 +27,7 @@ export default function ModelViewerLoader({
   const [searchParams] = useSearchParams()
 
   const viewer = searchParams.get('viewer')?.toLowerCase() || ''
-  const useIfc = useMemo(() => {
-    if (viewer === 'ifc') return true
-    if (viewer === 'trimble') return false
-    return import.meta.env.DEV && isLocalDevHost()
-  }, [viewer])
+  const useIfc = useMemo(() => viewer === 'ifc', [viewer])
 
   useEffect(() => {
     setMounted(true)

@@ -1,0 +1,6 @@
+IIS "실제 경로" = THIS publish-iis folder is WRONG.
+IIS physical path MUST be the "dist" subfolder next to this file, e.g.:
+D:\AI WEB\SBIM TC WEB\publish-iis\dist
+
+Inside dist you must have: index.html, web.config, start-node-5001.cmd, server/, assets/ (after npm run build:iis).
+If you only copy publish-iis from git without running build:iis, dist may be missing — that breaks deploy.

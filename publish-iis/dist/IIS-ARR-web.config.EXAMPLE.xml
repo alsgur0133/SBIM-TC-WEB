@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  iisnode 가 계속 500 일 때: ARR 역프록시로 Node(5001)만 쓰는 예시.
+  1) IIS에 ARR + URL Rewrite 설치 → 서버 수준 "프록시 사용" 켜기
+  2) dist\server 에서: set TRUST_PROXY=1&& set NODE_ENV=production&& set PORT=5001&& node index.js
+     (또는 pm2 start ecosystem.config.cjs)
+  3) 이 파일을 web.config 로 이름 바꿔 dist 에 두고, 기존 web.config 는 web.config.bak
+  4) 응용 프로그램 물리 경로 = publish-iis\dist (변경 없음)
+
+  아래 규칙은 모든 요청을 Node 로 넘깁니다(정적·SPA·API 모두 Express 가 처리).
+-->
+<configuration>
+  <system.webServer>
+    <rewrite>
+      <rules>
+        <rule name="RedirectHttpToHttps" stopProcessing="true">
+          <match url="(.*)" />
+          <conditions>
+            <add input="{HTTPS}" pattern="off" ignoreCase="true" />
+            <add input="{HTTP_HOST}" pattern="^(dev|develop)\.yunwootech\.com(:\d+)?$" ignoreCase="true" />
+          </conditions>
+          <action type="Redirect" url="https://{HTTP_HOST}{REQUEST_URI}" redirectType="Permanent" />
+        </rule>
+        <rule name="ReverseProxyToNode" stopProcessing="true">
+          <match url="(.*)" />
+          <action type="Rewrite" url="http://127.0.0.1:5001/bracetc/{R:1}" appendQueryString="true" />
+        </rule>
+      </rules>
+    </rewrite>
+  </system.webServer>
+</configuration>

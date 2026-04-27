@@ -14,6 +14,9 @@ const SERIAL_INSERT_TABLES = new Set([
   'quantity_item_type_mappings',
   'rebar_database_rows',
 ])
+const SERIAL_PK_CONSTRAINT_TABLES = new Set([
+  ...SERIAL_INSERT_TABLES,
+])
 
 let pool = null
 let wrapper = null
@@ -65,6 +68,20 @@ function appendReturningId (sql) {
   return trimmed + ' RETURNING id'
 }
 
+function getInsertTableName(sql) {
+  const s = sql.trim()
+  const m = /^\s*INSERT\s+INTO\s+(\w+)/i.exec(s)
+  return m ? m[1].toLowerCase() : ''
+}
+
+async function syncSerialSequence(queryFn, table) {
+  if (!SERIAL_PK_CONSTRAINT_TABLES.has(table)) return
+  await queryFn(
+    `SELECT setval(pg_get_serial_sequence('${table}', 'id'), COALESCE((SELECT MAX(id) FROM ${table}), 0) + 1, false)`,
+    []
+  )
+}
+
 function createQueryWrapper (queryFn) {
   return {
     async exec (sql) {
@@ -86,7 +103,18 @@ function createQueryWrapper (queryFn) {
         async run (...params) {
           const withRet = appendReturningId(sql)
           const { text, values } = toPgQuery(withRet, params)
-          const res = await queryFn(text, values)
+          let res
+          try {
+            res = await queryFn(text, values)
+          } catch (e) {
+            const table = getInsertTableName(sql)
+            if (e && e.code === '23505' && table && SERIAL_PK_CONSTRAINT_TABLES.has(table)) {
+              await syncSerialSequence(queryFn, table)
+              res = await queryFn(text, values)
+            } else {
+              throw e
+            }
+          }
           const changes = res.rowCount ?? 0
           let lastInsertRowid = 0
           if (res.rows && res.rows[0] && res.rows[0].id != null) {

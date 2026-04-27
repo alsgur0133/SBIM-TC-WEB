@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 진단용: 서버에서 web.config 로 이름 바꿔 쓰세요(원본은 백업).
+     /bracetc/test.txt 가 200이면 IIS·경로·권한은 정상이고, 원래 web.config(iisnode·rewrite) 쪽을 의심. -->
+<configuration>
+</configuration>

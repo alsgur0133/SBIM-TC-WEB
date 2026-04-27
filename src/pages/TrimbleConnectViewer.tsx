@@ -35,6 +35,21 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = window.setTimeout(() => reject(new Error(message)), timeoutMs)
+    promise
+      .then((v) => {
+        window.clearTimeout(t)
+        resolve(v)
+      })
+      .catch((e) => {
+        window.clearTimeout(t)
+        reject(e)
+      })
+  })
+}
+
 function waitForIframeLoad(iframe: HTMLIFrameElement, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const t = window.setTimeout(() => {
@@ -55,6 +70,7 @@ async function runTrimbleEmbedSession(
   options: {
     projectId?: string
     connectTimeoutMs: number
+    iframeLoadTimeoutMs: number
     readyDelayMs: number
     embedEnv: 'prod' | 'stage' | 'qa' | 'int'
     onDevLog?: (event: string, data: unknown) => void
@@ -70,25 +86,29 @@ async function runTrimbleEmbedSession(
   const quickStart = options.quickStart === true
 
   if (quickStart) {
-    const loadPromise = waitForIframeLoad(iframe, 120000)
+    const loadPromise = waitForIframeLoad(iframe, options.iframeLoadTimeoutMs)
     iframe.src = embedUrl
     await loadPromise
   } else {
     iframe.src = 'about:blank'
     await sleep(150)
-    const loadPromise = waitForIframeLoad(iframe, 120000)
+    const loadPromise = waitForIframeLoad(iframe, options.iframeLoadTimeoutMs)
     iframe.src = embedUrl
     await loadPromise
   }
   await sleep(options.readyDelayMs)
 
-  const api = (await connect(
-    iframe,
-    (event: string, data: unknown) => {
-      options.onDevLog?.(event, data)
-      options.onWorkspaceEvent?.(event, data)
-    },
-    options.connectTimeoutMs
+  const api = (await withTimeout(
+    connect(
+      iframe,
+      (event: string, data: unknown) => {
+        options.onDevLog?.(event, data)
+        options.onWorkspaceEvent?.(event, data)
+      },
+      options.connectTimeoutMs
+    ),
+    options.connectTimeoutMs + 3000,
+    'Trimble Workspace API 연결 시간이 초과되었습니다.'
   )) as WorkspaceAPI
 
   function embedReady(w: WorkspaceAPI) {
@@ -108,12 +128,20 @@ async function runTrimbleEmbedSession(
 
   const rawSec = Math.floor((tokens.expiresAt - Date.now()) / 1000)
   const expiresIn = Math.max(120, rawSec)
-  await embed.setTokens({
-    accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken,
-    expiresIn,
-  })
-  const initOk = await embed.init3DViewer(options.projectId ? { projectId: options.projectId } : {})
+  await withTimeout(
+    embed.setTokens({
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expiresIn,
+    }),
+    30000,
+    'Trimble 토큰 전달 시간이 초과되었습니다.'
+  )
+  const initOk = await withTimeout(
+    embed.init3DViewer(options.projectId ? { projectId: options.projectId } : {}),
+    options.connectTimeoutMs,
+    'Trimble 3D 뷰어 초기화 시간이 초과되었습니다.'
+  )
   if (initOk === false) {
     throw new Error(
       '3D 뷰어 초기화에 실패했습니다. Trimble Connect 프로젝트에 접근 권한이 있는지, 프로젝트 ID가 올바른지 확인하세요.'
@@ -186,7 +214,14 @@ export default function TrimbleConnectViewer({
     trimbleConnectProjectId || linkedTrimbleId || null
   )
 
-  const connectTimeoutMs = parsePositiveInt(import.meta.env.VITE_TRIMBLE_CONNECT_TIMEOUT_MS, 180000)
+  const connectTimeoutMs = parsePositiveInt(
+    import.meta.env.VITE_TRIMBLE_CONNECT_TIMEOUT_MS,
+    import.meta.env.DEV ? 45000 : 120000
+  )
+  const iframeLoadTimeoutMs = parsePositiveInt(
+    import.meta.env.VITE_TRIMBLE_IFRAME_LOAD_TIMEOUT_MS,
+    import.meta.env.DEV ? 45000 : 90000
+  )
   /** Trimble iframe 내부 스크립트 준비 시간 — 너무 짧으면 embed API 미노출·타임아웃 다발 */
   const readyDelayMs = parseEmbedReadyMs(import.meta.env.VITE_TRIMBLE_EMBED_READY_MS, 5500)
   const embedEnv = resolveEmbedEnv()
@@ -320,6 +355,7 @@ export default function TrimbleConnectViewer({
             connectedApi = await runTrimbleEmbedSession(iframe, session, {
               projectId: trimbleConnectProjectId,
               connectTimeoutMs,
+              iframeLoadTimeoutMs,
               readyDelayMs,
               embedEnv,
               onDevLog,
@@ -377,7 +413,7 @@ export default function TrimbleConnectViewer({
           )
           return false
         })
-      }, Math.max(connectTimeoutMs + 120000, 300000))
+      }, Math.max(connectTimeoutMs + iframeLoadTimeoutMs + readyDelayMs + 15000, import.meta.env.DEV ? 75000 : 180000))
 
       void run()
     })
@@ -397,6 +433,7 @@ export default function TrimbleConnectViewer({
     tryEmbedOnHttp,
     debugEmbed,
     connectTimeoutMs,
+    iframeLoadTimeoutMs,
     readyDelayMs,
     embedEnv,
     maxEmbedAttempts,

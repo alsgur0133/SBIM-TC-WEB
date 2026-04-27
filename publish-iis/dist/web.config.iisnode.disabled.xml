@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <!-- IIS 실제 경로 = publish-iis\dist. Node는 127.0.0.1:5001에서 상시 실행하고, IIS는 ARR로 프록시. -->
+  <system.webServer>
+    <rewrite>
+      <rules>
+        <rule name="RedirectHttpToHttps" stopProcessing="true">
+          <match url="(.*)" />
+          <conditions>
+            <add input="{HTTPS}" pattern="off" ignoreCase="true" />
+            <add input="{HTTP_HOST}" pattern="^(dev|develop)\.yunwootech\.com(:\d+)?$" ignoreCase="true" />
+          </conditions>
+          <action type="Redirect" url="https://{HTTP_HOST}{REQUEST_URI}" redirectType="Permanent" />
+        </rule>
+        <rule name="ReverseProxyToNode" stopProcessing="true">
+          <match url="(.*)" />
+          <action type="Rewrite" url="http://127.0.0.1:5001/bracetc/{R:1}" appendQueryString="true" />
+        </rule>
+      </rules>
+    </rewrite>
+  </system.webServer>
+</configuration>

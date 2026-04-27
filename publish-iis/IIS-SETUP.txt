@@ -1,0 +1,147 @@
+========================================
+  IIS 내부 서버에 앱 게시하는 방법
+========================================
+
+■ publish-iis 만 넣으면 되나요?
+----------------------------------------
+  폴더 복사는 필수이지만, 아래가 같이 맞아야 500 없이 동작합니다.
+  - 서버에 Node.js 설치 + iisnode + URL Rewrite (위 2·3단계)
+  - DATABASE_URL: publish-iis\.env (또는 server\.env) 에 한 줄
+  - IIS 응용 프로그램 경로 이름과 빌드 서브경로가 같아야 함
+    (예: 주소가 .../bracetc 이면 npm run build:iis 기본값 bracetc 과 일치)
+
+  ★★★ IIS "실제 경로" (npm run build:iis 후)
+      · F:\...\publish-iis\dist — 반드시 이 폴더만 지정 (web.config·index.html·server·assets 한곳에)
+      · publish-iis\server 는 더 이상 만들지 않음(예전처럼 루트에 server 두지 않음)
+
+  ★ Node 24 + iisnode 가 500 만 줄 때 (소스만으로는 iisnode DLL 을 못 고침)
+      → iisnode 대신: Node 는 pm2/nssm 등으로 5001 포트 상시 실행(TRUST_PROXY=1),
+        IIS 는 Application Request Routing(ARR) 으로 http://127.0.0.1:5001 로 역프록시.
+        예시: web.config.arr-proxy.example.xml, ecosystem.config.cjs
+      → IIS 서버에 ARR 설치 후 "프록시 사용" 켜기.
+
+
+■ 1단계: 이 폴더를 내부 서버 PC에 넣기
+----------------------------------------
+  "publish-iis" 폴더 전체를 서버 PC 원하는 위치로 복사합니다.
+  예: D:\WebApps\sbim-tc-web
+
+
+■ 2단계: 서버 PC에 Node.js 설치 (한 번만)
+----------------------------------------
+  - https://nodejs.org 에서 LTS 버전 설치
+  - 기본 경로 사용 시: C:\Program Files\nodejs
+  - 설치 후 "관리자 권한" 명령 프롬프트에서 한 번 확인:
+    node -v
+    npm -v
+
+
+■ 3단계: 서버 PC에 iisnode + URL Rewrite 설치 (한 번만)
+----------------------------------------
+  - iisnode: https://github.com/Azure/iisnode/releases
+    최신 설치 파일 다운로드 후 설치
+  - URL Rewrite (IIS용):
+    https://www.iis.net/downloads/microsoft/url-rewrite
+    설치하면 web.config의 주소 재작성 규칙이 동작합니다.
+
+
+■ 4단계: 앱 폴더 안에서 server 의존성 설치 (한 번만)
+----------------------------------------
+  명령 프롬프트에서:
+
+    cd /d "D:\WebApps\sbim-tc-web\dist\server"
+    npm install --omit=dev
+
+  (위 경로는 본인이 복사한 publish-iis\dist\server 로 바꾸세요. 보통 build:iis 후 복사할 필요 없음.)
+
+
+■ 5단계: IIS에서 사이트 추가
+----------------------------------------
+  1. IIS 관리자 실행 (inetmgr)
+  2. 왼쪽에서 [사이트] 우클릭 → [웹 사이트 추가]
+  3. 설정:
+     - 사이트 이름: SBIM-TC-WEB (아무 이름 가능)
+     - 실제 경로: D:\WebApps\sbim-tc-web\dist (publish-iis\dist 폴더)
+     - 포트: 80 (또는 원하는 포트, 예: 8080)
+     - 호스트 이름: 비워두거나, 내부 도메인 입력
+  4. [확인] 후 사이트 시작
+
+  ※ Node 경로가 다르면 publish-iis\dist 안 "web.config" 를 열어
+     nodeProcessCommandLine 값을 실제 node.exe 경로로 수정하세요.
+     예: "C:\Program Files\nodejs\node.exe"
+
+
+■ 6단계: 접속
+----------------------------------------
+  브라우저에서:
+    http://서버PC의IP주소
+    또는
+    http://서버PC의IP주소:포트번호
+    (예: http://192.168.0.10 또는 http://192.168.0.10:8080)
+
+  로그인: 이메일 sa, 비밀번호 1234
+
+
+========================================
+  요약: publish-iis 폴더 넣고 → Node 설치 → iisnode 설치
+        → (보통 생략) dist\server 에 npm install → IIS 실제 경로=dist → 접속
+========================================
+
+
+■ Node 가 “안 도는 것 같을 때” (500 + startup.log 없음)
+----------------------------------------
+  A) 먼저 IIS 없이 Node만 서버에서 테스트
+     1. publish-iis 폴더 안의 test-iis-node.cmd 를 더블클릭(또는 cmd에서 실행)
+     2. 검은 창에 "Server running" 비슷한 메시지가 나오면 → Node·DB·코드는 정상
+        → 그 경우 문제는 거의 항상 IIS / iisnode / URL Rewrite 입니다.
+
+  B) IIS 쪽에서 자주 빠지는 것
+     - iisnode 모듈 미설치
+       https://github.com/Azure/iisnode/releases 에서 설치 후 IIS 재시작
+     - URL Rewrite 미설치 (web.config 의 rewrite 가 동작 안 함)
+       https://www.iis.net/downloads/microsoft/url-rewrite
+     - 사이트 “실제 경로”가 publish-iis\dist 가 아님
+       (web.config·index.html·server 가 dist 한 폴더에 있어야 함)
+     - “응용 프로그램”으로 /bracetc 만 따로 둔 경우: 그 응용 프로그램의
+       실제 경로가 publish-iis\dist 인지 확인
+     - web.config 의 nodeProcessCommandLine 이 서버의 node.exe 경로와 일치하는지
+       (예: C:\Program Files\nodejs\node.exe)
+     - 애플리케이션 풀: “.NET CLR 버전” = “관리 코드 없음” 권장
+     - 애플리케이션 풀 → 고급 설정 → “32비트 응용 프로그램 사용”이 켜져 있으면
+       64비트 Node 와 맞지 않을 수 있음 → 끄기(서버에 맞게)
+
+  C) Windows 로그
+     - 이벤트 뷰어 → Windows 로그 → 응용 프로그램
+       → 원본 “iisnode” 또는 “IIS-W3SVC” 오류 메시지 확인
+
+
+■ 500 이 계속될 때
+----------------------------------------
+  1) 서버에서 F:\...\publish-iis\verify-iis-dist.cmd 더블클릭 (또는 test-iis-node.cmd)
+     → 검은 창에 "DB init OK" / "Server running" 이 나와야 정상.
+     → 바로 꺼지면 화면에 나온 영문 오류(또는 DATABASE_URL)를 먼저 해결.
+  2) (선택) iisnode 로그 폴더가 있으면 그 안의
+     *.txt 로그에 Node stderr 가 남는 경우가 있음 (web.config 의 iisnode logging).
+  3) F:\...\publish-iis\dist\server\startup.log 또는 %TEMP%\sbim-tc-web-boot.log
+  4) publish-iis\.env 에 DATABASE_URL 한 줄(주석 아님)이 있는지.
+     ※ Windows “시스템 환경 변수”에 DATABASE_URL 이 빈 값으로 있으면 예전에는 .env 가 무시될 수 있었음.
+        최신 server\db.js 는 .env 가 우선하도록 수정됨 — 그래도 서버에선 빈 DATABASE_URL 변수 삭제 권장.
+  5) PostgreSQL 이 같은 서버에서 접속 가능한지(방화벽, 비밀번호, DB 이름).
+  6) web.config 의 node.exe 경로가 서버 실제 설치 경로와 같은지( where node ).
+
+
+■ IIS 에서 “URL 재작성” 을 누르면 web.config 오류(세부 내용 비어 있음)
+----------------------------------------
+  대부분 아래 둘 중 하나입니다.
+  1) URL Rewrite 모듈이 서버에 없음 → Microsoft URL Rewrite 설치 후 IIS 재시작
+  2) iisnode 가 없음 → web.config 안의 <rewrite>, <handlers iisnode>, <iisnode> 를
+     IIS가 해석하지 못함 → iisnode 설치 후 IIS 재시작
+  최신 publish-iis 의 web.config 는 Redirect 규칙에서 appendQueryString 을
+  빼서(구버전 URL Rewrite 스키마 호환) 같은 증상을 줄였습니다. 파일을 다시 복사해 보세요.
+
+  POST /bracetc/api/... 가 IIS 404(HTML) 이고 GET 페이지만 될 때:
+  web.config 의 iisnode 핸들러에 resourceType="Unspecified" 가 있어야 합니다.
+  (물리 파일이 없는 API 경로를 Node 로 넘기기 위함)
+  - publish-iis 아래에 이름이 정확히 api 인 빈 폴더가 있으면 삭제해 보세요.
+  - IIS 에서 bracetc 가 “응용 프로그램”(별도 앱 풀/아이콘)인지 확인하세요. 가상 디렉터리만이면 web.config 가 기대대로 안 먹을 수 있습니다.
+

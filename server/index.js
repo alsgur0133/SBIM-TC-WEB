@@ -5033,8 +5033,58 @@ apiRouter.delete('/api/quantity-specs/:id', async (req, res) => {
 // -----------------------------------------------------------------------------
 // 부재 매핑 (부재명 ↔ 모델 속성) — 물량 부재유형(item_type) 표준화 참고용
 // -----------------------------------------------------------------------------
+async function ensureQuantityItemTypeMappingTable() {
+  const isPg = !!(process.env.DATABASE_URL && String(process.env.DATABASE_URL).trim())
+  if (isPg) {
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS quantity_item_type_mappings (
+        id SERIAL PRIMARY KEY,
+        item_label TEXT NOT NULL,
+        model_property TEXT NOT NULL,
+        segment TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT
+      )
+    `)
+  } else {
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS quantity_item_type_mappings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_label TEXT NOT NULL,
+        model_property TEXT NOT NULL,
+        segment TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT
+      )
+    `)
+  }
+  try {
+    await db.exec('ALTER TABLE quantity_item_type_mappings ADD COLUMN segment TEXT')
+  } catch (_) {}
+  try {
+    await db.exec('ALTER TABLE quantity_item_type_mappings ADD COLUMN sort_order INTEGER')
+  } catch (_) {}
+  try {
+    await db.exec('ALTER TABLE quantity_item_type_mappings ADD COLUMN created_at TEXT')
+  } catch (_) {}
+  if (isPg) {
+    await db.exec("UPDATE quantity_item_type_mappings SET sort_order = 0 WHERE sort_order IS NULL")
+    await db.exec("UPDATE quantity_item_type_mappings SET created_at = to_char(current_timestamp, 'YYYY-MM-DD HH24:MI:SS') WHERE created_at IS NULL OR created_at = ''")
+    try {
+      await db.exec("SELECT setval(pg_get_serial_sequence('quantity_item_type_mappings', 'id'), COALESCE((SELECT MAX(id) FROM quantity_item_type_mappings), 0) + 1, false)")
+    } catch (_) {}
+  } else {
+    await db.exec("UPDATE quantity_item_type_mappings SET sort_order = 0 WHERE sort_order IS NULL")
+    await db.exec("UPDATE quantity_item_type_mappings SET created_at = datetime('now', 'localtime') WHERE created_at IS NULL OR created_at = ''")
+  }
+  try {
+    await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_quantity_item_type_label ON quantity_item_type_mappings(item_label)')
+  } catch (_) {}
+}
+
 apiRouter.get('/api/quantity-item-type-mappings', async (req, res) => {
   try {
+    await ensureQuantityItemTypeMappingTable()
     const rows = await db
       .prepare(
         'SELECT id, item_label, model_property, segment, sort_order, created_at FROM quantity_item_type_mappings ORDER BY sort_order ASC, id ASC'
@@ -5048,6 +5098,7 @@ apiRouter.get('/api/quantity-item-type-mappings', async (req, res) => {
 
 apiRouter.post('/api/quantity-item-type-mappings', async (req, res) => {
   try {
+    await ensureQuantityItemTypeMappingTable()
     const userEmail = normalizeEmail((req.body && req.body.userEmail) || '')
     if (!(await canManageProjects(userEmail))) {
       return sendError(res, 403, '부재 매핑 등록은 관리자 또는 프로젝트 관리자만 가능합니다.')
@@ -5075,6 +5126,7 @@ apiRouter.post('/api/quantity-item-type-mappings', async (req, res) => {
 
 apiRouter.put('/api/quantity-item-type-mappings/:id', async (req, res) => {
   try {
+    await ensureQuantityItemTypeMappingTable()
     const userEmail = normalizeEmail((req.body && req.body.userEmail) || '')
     if (!(await canManageProjects(userEmail))) {
       return sendError(res, 403, '부재 매핑 수정은 관리자 또는 프로젝트 관리자만 가능합니다.')
@@ -5118,6 +5170,7 @@ apiRouter.put('/api/quantity-item-type-mappings/:id', async (req, res) => {
 
 apiRouter.delete('/api/quantity-item-type-mappings/:id', async (req, res) => {
   try {
+    await ensureQuantityItemTypeMappingTable()
     const userEmail = normalizeEmail(req.query.userEmail || '')
     if (!(await canManageProjects(userEmail))) {
       return sendError(res, 403, '부재 매핑 삭제는 관리자 또는 프로젝트 관리자만 가능합니다.')
@@ -5726,7 +5779,7 @@ apiRouter.post('/api/quantity-dongs', async (req, res) => {
   }
 })
 
-apiRouter.put('/api/quantity-dongs/:id', async (req, res) => {
+apiRouter.put('/api/quantity-dongs/:id(\\d+)', async (req, res) => {
   try {
     const userEmail = normalizeEmail((req.body && req.body.userEmail) || '')
     if (!(await canManageProjects(userEmail))) {
@@ -5754,7 +5807,7 @@ apiRouter.put('/api/quantity-dongs/:id', async (req, res) => {
   }
 })
 
-apiRouter.delete('/api/quantity-dongs/:id', async (req, res) => {
+apiRouter.delete('/api/quantity-dongs/:id(\\d+)', async (req, res) => {
   try {
     const userEmail = normalizeEmail(req.query.userEmail || '')
     if (!(await canManageProjects(userEmail))) {
@@ -5827,7 +5880,7 @@ apiRouter.post('/api/quantity-floors', async (req, res) => {
   }
 })
 
-apiRouter.put('/api/quantity-floors/:id', async (req, res) => {
+apiRouter.put('/api/quantity-floors/:id(\\d+)', async (req, res) => {
   try {
     const userEmail = normalizeEmail((req.body && req.body.userEmail) || '')
     if (!(await canManageProjects(userEmail))) {
@@ -5853,7 +5906,7 @@ apiRouter.put('/api/quantity-floors/:id', async (req, res) => {
   }
 })
 
-apiRouter.delete('/api/quantity-floors/:id', async (req, res) => {
+apiRouter.delete('/api/quantity-floors/:id(\\d+)', async (req, res) => {
   try {
     const userEmail = normalizeEmail(req.query.userEmail || '')
     if (!(await canManageProjects(userEmail))) {
